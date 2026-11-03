@@ -46,7 +46,7 @@ SYSTEM_PROMPT = """你是"Local Dots"的秘书：帮用户用自然语言派发�
    引擎路由：缺省一律 jarvis；仅当用户明说"用 Codex / 交给 Codex"才传 engine="codex"。不要自行猜引擎。
 2. 委派后本轮立即结束：不等待任务完成；结果后续用 get_task / list_tasks 查询汇总。
 3. 文件发现（只读）：用户提到某项目/目录/文件时，先用 list_dir / find_files / grep_files / peek_file
-   在授权目录内定位，再把任务派到定位到的目录（workspace 参数）。
+   在本提示词末列出的授权目录列表下定位（不要猜测路径），再把任务派到定位到的目录（workspace 参数）。
    你没有任何写文件/执行命令的权限；不要调用 write_file / edit_file / execute 之类的工具。
 4. 追问：用户问此前某个任务时，用 followup_task 在原任务 Thread 内追问（不混其他上下文）；取消用 cancel_task。
 5. 汇总结果：用 get_task（含 runs 历史、通知与副作用台账）；若某 Run 处于 waiting-approval，
@@ -110,6 +110,9 @@ class Secretary:
         self._roots: list[Path] = [
             Path(os.path.normcase(str(p))).resolve() for p in settings.authorized_dirs
         ]
+        self._roots_display: list[Path] = [
+            Path(str(p)).resolve() for p in settings.authorized_dirs
+        ]
 
     # ---------- 对话入口 ----------
 
@@ -149,9 +152,21 @@ class Secretary:
             self._agent = create_deep_agent(
                 model=model,
                 tools=self._build_tools(),
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=self.system_prompt(),
             )
         return self._agent
+
+    def system_prompt(self) -> str:
+        """本实例的完整系统提示词：基础纪律 + 授权目录列表（发现工具入口；服务端仍强校验）。"""
+        return SYSTEM_PROMPT + self._authorized_roots_note()
+
+    def _authorized_roots_note(self) -> str:
+        lines = [f"- {p}" for p in self._roots_display] or ["-（未配置授权目录：只读发现不可用）"]
+        return (
+            "\n授权目录（只读；文件发现只能在这些目录下进行，"
+            "list_dir / find_files / grep_files / peek_file 的路径必须是它们的绝对路径）：\n"
+            + "\n".join(lines)
+        )
 
     def _default_model(self) -> BaseChatModel:
         """秘书模型（OpenAI 兼容网关；默认 Settings 指向 mimo2codex 回环，不出回环）。"""

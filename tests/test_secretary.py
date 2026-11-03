@@ -320,3 +320,17 @@ def test_secretary_source_discipline():
     text = src.read_text(encoding="utf-8")
     assert "chdir" not in text
     assert "subprocess" not in text
+
+
+def test_system_prompt_lists_authorized_roots():
+    """秘书系统提示词附授权目录列表（LLM 发现入口；服务端强制校验由既有发现测试覆盖）。"""
+    base_root = Path(BASE)
+    settings = _settings("sec_roots_prompt", ld_secretary_authorized_dirs=str(base_root))
+    sec = Secretary(TaskManager(settings.tasks_db_path), None, settings)
+    sp = sec.system_prompt()
+    assert str(base_root.resolve()) in sp
+    assert "授权目录" in sp and "只读" in sp
+
+    settings0 = _settings("sec_roots_empty", ld_secretary_authorized_dirs="")
+    sec0 = Secretary(TaskManager(settings0.tasks_db_path), None, settings0)
+    assert "未配置授权目录" in sec0.system_prompt()
