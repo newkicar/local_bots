@@ -1,7 +1,7 @@
 """Local Dots V1.0 服务入口（FastAPI，仅监听 127.0.0.1）。
 
 票 01 骨架：Bearer Token 认证 + 任务 API + SSE 状态推送。
-引擎按 ADR-0002/0005 走 adapters；本票默认不挂真实引擎（测试注入假引擎）。
+票 02 起挂载 codex 真实引擎（默认 sandbox read-only + 粗粒度黑名单兜底）；票 05 加 jarvis。
 """
 from __future__ import annotations
 
@@ -16,7 +16,9 @@ from pydantic import BaseModel
 
 from app.settings import Settings, get_settings
 from app.adapters.base import EngineAdapter
+from app.adapters.codex import CodexAdapter
 from app.dispatcher import Dispatcher
+from app.permissions import Blacklist, coarse_task_policy
 from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
 
 
@@ -44,15 +46,16 @@ class SubmitTask(BaseModel):
     engine: str | None = None
     workspace: str | None = None
     parent_task_id: str | None = None
+    writes_authorized: bool = False
 
 
 class FollowupRequest(BaseModel):
     instruction: str
 
 
-def _default_engines() -> dict[str, EngineAdapter]:
-    """票 02/05 在此挂载真实引擎（codex / jarvis）；票 01 返回空，测试注入假引擎。"""
-    return {}
+def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
+    """票 02 挂 codex（外部 CLI，经 mimo2codex 网关）；票 05 在此加 jarvis。测试注入假引擎。"""
+    return {"codex": CodexAdapter(cli=settings.ld_codex_cli)}
 
 
 def create_app(
@@ -62,13 +65,19 @@ def create_app(
     settings = settings or get_settings()
     settings.ld_data_dir.mkdir(parents=True, exist_ok=True)
     settings.ld_workspace_dir.mkdir(parents=True, exist_ok=True)
+    # 粗粒度黑名单文件缺省初始化（[]）；运行期追加即时生效（permissions.Blacklist 每次重读）
+    bl_path = settings.blacklist_path
+    bl_path.parent.mkdir(parents=True, exist_ok=True)
+    if not bl_path.exists():
+        bl_path.write_text("[]", encoding="utf-8")
 
     hub = SSEHub()
     tm = TaskManager(settings.tasks_db_path, notify=hub.publish)
     dispatcher = Dispatcher(
         tm,
-        _default_engines() if engines is None else engines,
+        _default_engines(settings) if engines is None else engines,
         max_concurrent=settings.ld_max_concurrent_runs,
+        policy=coarse_task_policy(Blacklist(settings.blacklist_path)),
     )
 
     @asynccontextmanager
@@ -105,7 +114,13 @@ def create_app(
             engine=body.engine or "jarvis",
             workspace=body.workspace,
             parent_task_id=body.parent_task_id,
+            writes_authorized=body.writes_authorized,
         )
+        if task["workspace"] is None:
+            ws = settings.ld_workspace_dir / task["task_id"]
+            ws.mkdir(parents=True, exist_ok=True)
+            await tm.set_task_workspace(task["task_id"], str(ws))
+            task["workspace"] = str(ws)
         return task
 
     @app.get("/api/tasks", dependencies=[auth])

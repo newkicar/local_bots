@@ -78,7 +78,7 @@ def test_submit_and_lifecycle_thread_binding():
         assert t["status"] == "queued"
         assert t["engine"] == "fake"  # 显式提交引擎（假引擎驱动）
         assert t["engine_thread_id"] is None
-        assert t["workspace"] is None
+        assert t["workspace"] and os.path.isdir(t["workspace"])
         assert t["parent_task_id"] is None
         t = _wait_terminal(c, tid)
         assert t["status"] == "reported"

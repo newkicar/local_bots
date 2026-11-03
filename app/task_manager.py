@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tasks(
     engine TEXT NOT NULL DEFAULT 'jarvis',
     engine_thread_id TEXT,
     workspace TEXT,
+    writes_authorized INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'queued',
     parent_task_id TEXT,
     instruction TEXT,
@@ -115,6 +116,14 @@ class TaskManager:
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
+        # 幂等迁移（票 02）：旧库补齐 writes_authorized 列
+        async with self.db.execute("PRAGMA table_info(tasks)") as cur:
+            cols = {r[1] for r in await cur.fetchall()}
+        if "writes_authorized" not in cols:
+            await self.db.execute(
+                "ALTER TABLE tasks ADD COLUMN writes_authorized INTEGER NOT NULL DEFAULT 0"
+            )
+            await self.db.commit()
 
     @property
     def db(self) -> aiosqlite.Connection:
@@ -139,14 +148,17 @@ class TaskManager:
         engine: str = "jarvis",
         workspace: str | None = None,
         parent_task_id: str | None = None,
+        writes_authorized: bool = False,
     ) -> dict[str, Any]:
         task_id = "T" + uuid.uuid4().hex[:12]
         ts = _now()
         run_id = "R" + uuid.uuid4().hex[:12]
         async with self.db.execute(
-            "INSERT INTO tasks(task_id, seq, engine, workspace, status, parent_task_id, instruction, created_at, updated_at) "
-            "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM tasks), ?, ?, 'queued', ?, ?, ?, ?)",
-            (task_id, engine, workspace, parent_task_id, instruction, ts, ts),
+            "INSERT INTO tasks(task_id, seq, engine, workspace, writes_authorized, status, "
+            "parent_task_id, instruction, created_at, updated_at) "
+            "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM tasks), ?, ?, ?, 'queued', ?, ?, ?, ?)",
+            (task_id, engine, workspace, 1 if writes_authorized else 0,
+             parent_task_id, instruction, ts, ts),
         ):
             pass
         await self._insert_run(run_id, task_id, 1, "queued", origin="submitted")
@@ -158,8 +170,9 @@ class TaskManager:
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         async with self.db.execute(
-            "SELECT task_id, seq, engine, engine_thread_id, workspace, status, parent_task_id, "
-            "instruction, result, error, reject_reason, created_at, updated_at FROM tasks WHERE task_id=?",
+            "SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, "
+            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at "
+            "FROM tasks WHERE task_id=?",
             (task_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -172,8 +185,9 @@ class TaskManager:
 
     async def list_tasks(self) -> list[dict[str, Any]]:
         async with self.db.execute(
-            "SELECT task_id, seq, engine, engine_thread_id, workspace, status, parent_task_id, "
-            "instruction, result, error, reject_reason, created_at, updated_at FROM tasks ORDER BY seq DESC"
+            "SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, "
+            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at "
+            "FROM tasks ORDER BY seq DESC"
         ) as cur:
             rows = await cur.fetchall()
         out = [self._task_row(r) for r in rows]
@@ -183,9 +197,12 @@ class TaskManager:
 
     @staticmethod
     def _task_row(row: tuple) -> dict[str, Any]:
-        cols = ("task_id", "seq", "engine", "engine_thread_id", "workspace", "status", "parent_task_id",
-                "instruction", "result", "error", "reject_reason", "created_at", "updated_at")
-        return dict(zip(cols, row))
+        cols = ("task_id", "seq", "engine", "engine_thread_id", "workspace", "writes_authorized",
+                "status", "parent_task_id", "instruction", "result", "error", "reject_reason",
+                "created_at", "updated_at")
+        d = dict(zip(cols, row))
+        d["writes_authorized"] = bool(d["writes_authorized"])
+        return d
 
     async def _insert_run(self, run_id: str, task_id: str, attempt: int, state: str, *,
                            origin: str = "submitted", queue_position: int | None = None) -> None:
@@ -271,6 +288,14 @@ class TaskManager:
             "type": "task_state", "task_id": task_id, "to": "thread-bound",
             "engine_thread_id": engine_thread_id,
         })
+
+    async def set_task_workspace(self, task_id: str, workspace: str) -> None:
+        """任务级 workspace 自动分配（票 02：未显式指定时落 ld_workspace_dir/<task_id>）。"""
+        await self.db.execute(
+            "UPDATE tasks SET workspace=?, updated_at=? WHERE task_id=?",
+            (workspace, _now(), task_id),
+        )
+        await self.db.commit()
 
     # ---------- Side-Effect Ledger（追加式，从不回滚） ----------
     async def append_side_effect(self, run_id: str, effect: dict[str, Any]) -> list[dict[str, Any]]:
@@ -358,8 +383,9 @@ class TaskManager:
         states = sorted(TASK_ACTIVE_STATES)
         ph = ",".join("?" for _ in states)
         async with self.db.execute(
-            f"SELECT task_id, seq, engine, engine_thread_id, workspace, status, parent_task_id, instruction, "
-            f"result, error, reject_reason, created_at, updated_at FROM tasks WHERE status IN ({ph}) ORDER BY seq",
+            f"SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, parent_task_id, "
+            f"instruction, result, error, reject_reason, created_at, updated_at FROM tasks "
+            f"WHERE status IN ({ph}) ORDER BY seq",
             states,
         ) as cur:
             rows = await cur.fetchall()
