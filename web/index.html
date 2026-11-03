@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Dots</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">Local Dots</span>
+  <span id="conn" class="conn" title="SSE 状态推送">● 离线</span>
+  <button id="btn-logout" class="ghost" type="button">退出</button>
+</header>
+
+<main class="wrap">
+  <!-- 聊天面板 -->
+  <section id="panel-chat" class="panel">
+    <div id="chat-msgs" class="chat-msgs" aria-live="polite"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" type="text" placeholder="找秘书：派活 / 查任务 / 追问 / 取消…" autocomplete="off">
+      <button type="submit">发送</button>
+    </form>
+  </section>
+
+  <!-- 任务列表面板 -->
+  <section id="panel-tasks" class="panel hidden">
+    <div class="panel-actions">
+      <button id="btn-refresh-tasks" class="ghost" type="button">刷新</button>
+    </div>
+    <div id="task-list"></div>
+  </section>
+
+  <!-- 审批面板 -->
+  <section id="panel-approvals" class="panel hidden">
+    <div class="panel-actions">
+      <button id="btn-refresh-approvals" class="ghost" type="button">刷新</button>
+    </div>
+    <div id="approval-list"></div>
+  </section>
+
+  <!-- 结果面板 -->
+  <section id="panel-results" class="panel hidden">
+    <div class="panel-actions">
+      <button id="btn-refresh-results" class="ghost" type="button">刷新</button>
+    </div>
+    <div id="result-list"></div>
+  </section>
+</main>
+
+<nav class="tabbar">
+  <button class="tab active" data-panel="chat" type="button">聊天</button>
+  <button class="tab" data-panel="tasks" type="button">任务<span class="badge hidden" id="badge-tasks"></span></button>
+  <button class="tab" data-panel="approvals" type="button">审批<span class="badge hidden" id="badge-approvals"></span></button>
+  <button class="tab" data-panel="results" type="button">结果<span class="badge hidden" id="badge-results"></span></button>
+</nav>
+
+<!-- 登录 -->
+<div id="login" class="overlay hidden">
+  <form id="login-form" class="login-card">
+    <h1>Local Dots</h1>
+    <p>本机回环访问，输入 API Token（Bearer）</p>
+    <input id="login-token" type="password" placeholder="API Token" autocomplete="off" required>
+    <button type="submit">进入</button>
+    <p id="login-err" class="err"></p>
+  </form>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

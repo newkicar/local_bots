@@ -2,6 +2,7 @@
 
 票 01 骨架：Bearer Token 认证 + 任务 API + SSE 状态推送。
 票 02 起挂载 codex 真实引擎（默认 sandbox read-only + 粗粒度黑名单兜底）；票 05 挂载 jarvis（缺省引擎，ADR-0001）。
+票 07 挂载 web/ 原生 Web UI（StaticFiles 于 /，API 鉴权不变）。
 """
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 
 from app.settings import Settings, get_settings
@@ -263,6 +266,12 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # 票 07：原生 Web UI（无框架）。静态页仅承载登录与 API 调用，
+    # 自身不含密钥；鉴权一律在 /api（Bearer Token，SSE 走 ?token= 查询参数）。
+    web_dir = Path(__file__).resolve().parent.parent / "web"
+    if web_dir.is_dir():
+        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
 
     return app
 

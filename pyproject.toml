@@ -27,3 +27,4 @@ include = ["app*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 timeout = 300
+norecursedirs = ["tmp_workspace"]

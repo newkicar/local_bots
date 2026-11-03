@@ -18,12 +18,17 @@ class FakeEngine(EngineAdapter):
         delay: float = 0.0,
         fail: bool = False,
         suspend: bool = False,
+        suspend_times: int = 0,
         reconcile_safe: bool = False,
         reconcile_result: str | None = None,
     ) -> None:
         self._delay = delay
         self._fail = fail
         self._suspend = suspend
+        # 前 suspend_times 次 execute 挂起（批准后恢复才放行的有状态行为）；
+        # 0 = 不挂起；suspend=True 保持旧行为（始终挂起）
+        self._suspend_times = suspend_times
+        self._suspended = 0
         self._reconcile_safe = reconcile_safe
         self._reconcile_result = reconcile_result
         self.executed: list[tuple[str, str]] = []
@@ -37,7 +42,9 @@ class FakeEngine(EngineAdapter):
         return thread
 
     async def execute(self, task, run, thread, hooks, *, resume_note=None) -> str:
-        if self._suspend:
+        if self._suspend or self._suspended < self._suspend_times:
+            if self._suspend_times:
+                self._suspended += 1
             raise RunSuspended(
                 {"kind": "write", "path": r"C:\secret", "detail": "fake-blacklist"},
                 "fake-blacklist",
