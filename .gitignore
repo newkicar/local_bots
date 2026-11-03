@@ -6,3 +6,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 tests/tmp_workspace/
+
+# local_dots 构建/运行产物
+*.egg-info/
+tests/tmp_workspace/
+data/
+workspace/
