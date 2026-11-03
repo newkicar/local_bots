@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -22,6 +22,7 @@ from app.approval import ApprovalGate
 from app.dispatcher import Dispatcher
 from app.permissions import Blacklist, coarse_task_policy
 from app.reconcile import reconcile_on_startup
+from app.secretary import Secretary
 from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
 
 
@@ -60,6 +61,11 @@ class RejectApproval(BaseModel):
     reason: str
 
 
+class ChatRequest(BaseModel):
+    message: str
+    history: list[dict[str, str]] = []
+
+
 def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
     """票 02 挂 codex（外部 CLI，经 mimo2codex 网关）；票 05 在此加 jarvis。测试注入假引擎。"""
     return {
@@ -71,6 +77,8 @@ def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
 def create_app(
     settings: Settings | None = None,
     engines: dict[str, EngineAdapter] | None = None,
+    secretary: Secretary | None = None,
+    secretary_factory: Callable[[TaskManager, Dispatcher, Settings], Secretary] | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     settings.ld_data_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +102,13 @@ def create_app(
     gate = ApprovalGate(
         tm, dispatcher, bl, timeout_min=settings.ld_approval_timeout_min
     )
+    sec = secretary
+    if sec is None:
+        sec = (
+            secretary_factory(tm, dispatcher, settings)
+            if secretary_factory is not None
+            else Secretary(tm, dispatcher, settings)
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -114,6 +129,7 @@ def create_app(
     app.state.tm = tm
     app.state.dispatcher = dispatcher
     app.state.gate = gate
+    app.state.secretary = sec
 
     async def _auth(request: Request) -> None:
         header = request.headers.get("authorization", "")
@@ -207,6 +223,11 @@ def create_app(
             raise HTTPException(status_code=404, detail="run not found")
         except InvalidTransition as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/chat", dependencies=[auth])
+    async def chat(body: ChatRequest) -> dict[str, Any]:
+        """秘书聊天（票 06）：自然语言派活与任务汇总；委托后立即返回，不等待引擎。"""
+        return await sec.chat(body.message, body.history or None)
 
     @app.get("/api/notifications", dependencies=[auth])
     async def notifications(task_id: str = Query(...)) -> list[dict[str, Any]]:
