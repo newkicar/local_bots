@@ -8,7 +8,7 @@ start_agent_session），委派后不等待引擎完成，继续接受新任务�
 
 **Blocked by:** 02 (Codex 适配 + Dispatcher), 05 (Jarvis 适配)
 
-**Status:** ready-for-agent
+**Status:** done（commit 886dcc6 + f4eba74；系统提示词附授权目录列表，权限仍由服务端 + Windows 账户强制，不靠 prompt）
 
 - [ ] 自然语言"让 Codex 分析项目 A，Jarvis 整理项目 B"→ 创建两个后台任务并立即继续对话
 - [ ] 未指定引擎时路由到 Jarvis；显式指定 Codex 才走 Codex（无 LLM 路由、无公司数据自动判定）

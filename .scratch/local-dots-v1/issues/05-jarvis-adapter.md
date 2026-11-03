@@ -8,7 +8,7 @@ Workspace 内真实执行（验收：多引擎复用——Jarvis 保持现有模
 **Blocked by:** 01 (应用骨架), 02 (Codex 适配 + Dispatcher), 外部前置：truly-jarvis-main 的 Phase A 完成
 （.scratch/phase-a-jarvis-adapter/spec.md 五项全绿；其仓 ADR 0012+）
 
-**Status:** ready-for-agent
+**Status:** done（commit 03a49a3；验收③ 动态工作目录见 ../acceptance-record.md；本机 Jarvis 模型暂不可用，jarvis 任务终态 failed 可达、原因可查）
 
 - [ ] adapters/jarvis.py 只 import 公开入口，零 import Jarvis 内部模块（评审必查）
 - [ ] checkpointer 由 Local Dots 注入独立 SQLite 库（task_id 作 thread_id），无模块级单例

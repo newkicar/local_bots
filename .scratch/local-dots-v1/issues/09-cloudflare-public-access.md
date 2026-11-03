@@ -6,7 +6,7 @@ localhost:8000。前置双门禁：本地六条验收全过 + 公司 IT 明确�
 
 **Blocked by:** 08 (登录自启 + 六条验收), 外部门禁：公司 IT 书面批准
 
-**Status:** ready-for-agent
+**Status:** deferred（G1 本地六条验收已过；G2 公司 IT 书面批准未获得，按门禁不实施。蓝图与门禁记录见 ../../../docs/cloudflare-blueprint.md，commit 44744f3；服务仍仅监听 127.0.0.1）
 
 - [ ] FastAPI 仍仅监听 127.0.0.1，无公网直连端口
 - [ ] Access 仅放行指定身份且启用 MFA；后端仍校验用户身份与操作权限

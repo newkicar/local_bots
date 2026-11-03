@@ -8,7 +8,7 @@
 
 **Blocked by:** 02 (Codex 适配 + Dispatcher)
 
-**Status:** ready-for-agent
+**Status:** done（commit 7c6866f；拒绝路径与 Side-Effect Ledger 见 ../acceptance-record.md）
 
 - [ ] 命中 Blacklist 目录的操作进 waiting-approval；未命中一律放行（黑名单制，非白名单）
 - [ ] 批准后 Run 继续；拒绝后当前步即停、后续步骤不再执行、副作用不回滚且 Ledger 完整输出

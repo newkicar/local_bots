@@ -8,7 +8,7 @@ reported 状态与通知记录；同 Thread 追问（followup_task）复用引�
 
 **Blocked by:** 01 (应用骨架)
 
-**Status:** ready-for-agent
+**Status:** done（commit f8a4fe2；验收① 多任务执行见 ../acceptance-record.md）
 
 - [ ] 提交 codex 任务 → running → completed，结果可经 get_task 读取（验收：多任务执行，可连提三项不互相等待）
 - [ ] Codex 保持现有模型与 Skills（不改 ~/.codex/config.toml，连通性来自 mimo2codex 网关）

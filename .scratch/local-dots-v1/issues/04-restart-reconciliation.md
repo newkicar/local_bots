@@ -6,7 +6,7 @@ waiting-approval 请求用户核实；尚未汇报的结果保留（验收：可
 
 **Blocked by:** 02 (Codex 适配 + Dispatcher)
 
-**Status:** ready-for-agent
+**Status:** done（commit 813b046；验收⑤b 重启核对不盲目重试见 ../acceptance-record.md）
 
 - [ ] 杀掉服务再启动：queued 任务继续排队，running 任务按核对结果恢复或转等待核实
 - [ ] 无法确认副作用的 Run 落 waiting-approval（含重启核对来源标记），而非直接重跑

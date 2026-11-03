@@ -6,7 +6,7 @@
 
 **Blocked by:** 07 (Web UI 四件套)
 
-**Status:** ready-for-agent
+**Status:** done（commit 549e5b3；六条验收总跑 7/7 全过，逐条证据见 ../acceptance-record.md；IT 策略禁计划任务（0x80070005），自启改用登录 Startup 目录机制）
 
 - [ ] 计划任务随登录启动服务；杀服务后计划任务可拉起；不打包、非 Docker
 - [ ] 验收①多任务执行：连提三项互不等待

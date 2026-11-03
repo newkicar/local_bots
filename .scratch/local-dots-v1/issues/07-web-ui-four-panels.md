@@ -8,7 +8,7 @@ failed/rejected/cancelled 结果与 Side-Effect Ledger 查看）。SSE 状态推
 
 **Blocked by:** 03 (Approval Gate——审批面板), 06 (Secretary——聊天面板)
 
-**Status:** ready-for-agent
+**Status:** done（commit 5ef3888；验收⑥ 回环内远程操作见 ../acceptance-record.md）
 
 - [ ] 手机宽度下四面板可用（响应式），Bearer Token 登录
 - [ ] 聊天提交任务 → 任务列表实时（SSE）出现且状态迁移可见

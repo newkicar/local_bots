@@ -7,7 +7,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done（commit fcc84de；验收证据见 ../acceptance-record.md）
 
 - [ ] 无 Token / 错 Token 的 API 请求被拒（401），正确 Token 放行
 - [ ] 提交任务立即返回 task_id，任务记录含 task_id、engine、engine_thread_id（引擎建 Thread 后立即写库）、workspace、status、parent_task_id
