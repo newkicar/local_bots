@@ -168,10 +168,13 @@ class Dispatcher:
         except Exception as exc:  # noqa: BLE001
             await self._fail(run, task, f"engine crash: {exc}")
             return
-        if not await self._tm.transition_task(task["task_id"], "running"):
-            await self._tm.transition_run(run["run_id"], "cancelled", error="task no longer active")
-            return
-        await self._tm.transition_run(run["run_id"], "running", started_at=_now())
+        # resume 路径（resume_run）已把 run/task 预置为 running：状态机无自环可跳，须守卫
+        if task["status"] != "running":
+            if not await self._tm.transition_task(task["task_id"], "running"):
+                await self._tm.transition_run(run["run_id"], "cancelled", error="task no longer active")
+                return
+        if run["state"] != "running":
+            await self._tm.transition_run(run["run_id"], "running", started_at=_now())
         try:
             result = await engine.execute(task, run, thread, hooks, resume_note=resume_note)
         except RunSuspended as s:
@@ -269,7 +272,8 @@ class Dispatcher:
         task = await self._tm.get_task(task_id)
         assert task is not None
         ledger = [
-            {"run_id": r["run_id"], "attempt": r["attempt"], "state": r["state"]}
+            {"run_id": r["run_id"], "attempt": r["attempt"], "state": r["state"],
+             "side_effects": r["side_effects"]}
             for r in task["runs"]
         ]
         await self._tm.add_notification(task_id, "task_cancelled", {"ledger": ledger})

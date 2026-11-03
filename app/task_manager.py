@@ -106,9 +106,11 @@ class InvalidTransition(Exception):
 
 
 class TaskManager:
-    def __init__(self, db_path, notify: NotifyFn | None = None) -> None:
+    def __init__(self, db_path, notify: NotifyFn | None = None, *,
+                 clock: Callable[[], str] | None = None) -> None:
         self._db_path = str(db_path)
         self._notify = notify
+        self._clock = clock or _now
         self._db: aiosqlite.Connection | None = None
 
     # ---------- 生命周期 ----------
@@ -397,7 +399,7 @@ class TaskManager:
     # ---------- 审批挂起/恢复 ----------
     async def suspend_run(self, run_id: str, *, wait_reason: str, pending_op: dict[str, Any] | None,
                            approved_paths: list[str]) -> None:
-        ts = _now()
+        ts = self._clock()
         await self.db.execute(
             "UPDATE runs SET state='waiting-approval', wait_reason=?, wait_requested_at=?, pending_op=?, "
             "decision='pending', origin=COALESCE(origin,'submitted') WHERE run_id=?",
@@ -416,6 +418,27 @@ class TaskManager:
         await self.db.execute("UPDATE runs SET pending_op=? WHERE run_id=?",
                                (json.dumps(info, ensure_ascii=False), run_id))
         await self.db.commit()
+
+    # ---------- 票 03：审批查询与决策 ----------
+    async def waiting_runs(self) -> list[dict[str, Any]]:
+        """全部 waiting-approval Run（审批门禁清扫/待审列表）。"""
+        async with self.db.execute(
+            "SELECT run_id, task_id, attempt, state, origin, queue_position, started_at, finished_at, "
+            "result, error, side_effects, pending_op, wait_reason, wait_requested_at, decision, created_at "
+            "FROM runs WHERE state='waiting-approval' ORDER BY wait_requested_at, created_at"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._run_row(r) for r in rows]
+
+    async def decide_run(self, run_id: str, decision: str) -> bool:
+        """审批决策写入 run；仅 waiting-approval 可写，并发落空返回 False。"""
+        async with self.db.execute(
+            "UPDATE runs SET decision=? WHERE run_id=? AND state='waiting-approval'",
+            (decision, run_id),
+        ) as cur:
+            changed = cur.rowcount > 0
+        await self.db.commit()
+        return changed
 
     # ---------- 活跃任务集（票 01：同 Thread 并发执行串行化） ----------
     async def active_task_ids(self) -> set[str]:

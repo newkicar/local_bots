@@ -62,6 +62,22 @@ class Blacklist:
             return True
         return any(boundary_match(path, e) for e in entries)
 
+    def entries(self) -> list[str]:
+        """当前条目公开访问（展示/审计用）；文件缺席与 fail-closed 损坏态均返回 []."""
+        data = self._entries()
+        return [] if data is _MATCH_ALL else list(data)
+
+    def add_entry(self, path: str) -> bool:
+        """审核式追加（数据而非代码）：已被现有条目边界覆盖 → False 不写；否则追加并持久化。"""
+        path = os.path.normpath(path)
+        current = self.entries()
+        if any(boundary_match(path, e) for e in current):
+            return False
+        current.append(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+
 
 def coarse_task_policy(bl: Blacklist) -> PolicyFn:
     """Dispatcher 提交时策略：workspace 命中黑名单 → 挂起等待人工审批。

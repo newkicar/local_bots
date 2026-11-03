@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from app.settings import Settings, get_settings
 from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
+from app.approval import ApprovalGate
 from app.dispatcher import Dispatcher
 from app.permissions import Blacklist, coarse_task_policy
 from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
@@ -53,6 +54,10 @@ class FollowupRequest(BaseModel):
     instruction: str
 
 
+class RejectApproval(BaseModel):
+    reason: str
+
+
 def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
     """票 02 挂 codex（外部 CLI，经 mimo2codex 网关）；票 05 在此加 jarvis。测试注入假引擎。"""
     return {"codex": CodexAdapter(cli=settings.ld_codex_cli)}
@@ -73,20 +78,26 @@ def create_app(
 
     hub = SSEHub()
     tm = TaskManager(settings.tasks_db_path, notify=hub.publish)
+    bl = Blacklist(settings.blacklist_path)
     dispatcher = Dispatcher(
         tm,
         _default_engines(settings) if engines is None else engines,
         max_concurrent=settings.ld_max_concurrent_runs,
-        policy=coarse_task_policy(Blacklist(settings.blacklist_path)),
+        policy=coarse_task_policy(bl),
+    )
+    gate = ApprovalGate(
+        tm, dispatcher, bl, timeout_min=settings.ld_approval_timeout_min
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await tm.open()
         dispatcher.start()
+        gate.start()
         try:
             yield
         finally:
+            await gate.stop()
             await dispatcher.stop()
             await tm.close()
 
@@ -94,6 +105,7 @@ def create_app(
     app.state.hub = hub
     app.state.tm = tm
     app.state.dispatcher = dispatcher
+    app.state.gate = gate
 
     async def _auth(request: Request) -> None:
         header = request.headers.get("authorization", "")
@@ -165,6 +177,28 @@ def create_app(
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return run
+
+    @app.get("/api/approvals", dependencies=[auth])
+    async def list_approvals() -> list[dict[str, Any]]:
+        return await gate.list_pending()
+
+    @app.post("/api/approvals/{run_id}/approve", dependencies=[auth])
+    async def approve_run(run_id: str) -> dict[str, Any]:
+        try:
+            return await gate.approve(run_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found")
+        except InvalidTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/approvals/{run_id}/reject", dependencies=[auth])
+    async def reject_run(run_id: str, body: RejectApproval) -> dict[str, Any]:
+        try:
+            return await gate.reject(run_id, body.reason)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found")
+        except InvalidTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.get("/api/notifications", dependencies=[auth])
     async def notifications(task_id: str = Query(...)) -> list[dict[str, Any]]:
