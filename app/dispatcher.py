@@ -296,6 +296,21 @@ class Dispatcher:
             self._drive(run_id, resume_note)
         )
 
+    async def redrive(self, run_id: str, resume_note: str | None = None) -> None:
+        """重启核对恢复（票 04）：直接驱动 running/interrupted 的 Run，不预迁移。
+
+        _drive 重读新行，_do_execute 的状态机守卫完成 interrupted→running 迁移
+        （票 04 过渡表新增合法边）；若 Run 已为 running（kill -9 残留）则跳过。
+        容量等待同 resume_run；关停后拒绝驱动。
+        """
+        while not self._shutdown and len(self._execs) >= self._max:
+            await asyncio.sleep(0.2)
+        if self._shutdown:
+            raise RuntimeError("dispatcher 已关停")
+        self._execs[run_id] = asyncio.get_running_loop().create_task(
+            self._drive(run_id, resume_note)
+        )
+
     # ---------- RunHooks 实现（适配器回调） ----------
     async def thread_bound(self, task_id: str, thread_id: str) -> None:
         task = await self._tm.get_task(task_id)

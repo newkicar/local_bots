@@ -33,7 +33,7 @@ TASK_TRANSITIONS: dict[str, set[str]] = {
     "failed": {"queued"},
     "cancelled": {"queued"},
     "rejected": {"queued"},
-    "interrupted": {"running", "waiting-approval", "queued", "cancelled"},
+    "interrupted": {"running", "completed", "waiting-approval", "queued", "cancelled"},
 }
 
 RUN_TRANSITIONS: dict[str, set[str]] = {
@@ -44,7 +44,7 @@ RUN_TRANSITIONS: dict[str, set[str]] = {
     "failed": set(),
     "cancelled": set(),
     "rejected": set(),
-    "interrupted": set(),
+    "interrupted": {"running", "completed", "waiting-approval"},
 }
 
 _SCHEMA = """

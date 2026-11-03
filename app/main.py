@@ -20,6 +20,7 @@ from app.adapters.codex import CodexAdapter
 from app.approval import ApprovalGate
 from app.dispatcher import Dispatcher
 from app.permissions import Blacklist, coarse_task_policy
+from app.reconcile import reconcile_on_startup
 from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
 
 
@@ -79,9 +80,10 @@ def create_app(
     hub = SSEHub()
     tm = TaskManager(settings.tasks_db_path, notify=hub.publish)
     bl = Blacklist(settings.blacklist_path)
+    resolved_engines = _default_engines(settings) if engines is None else engines
     dispatcher = Dispatcher(
         tm,
-        _default_engines(settings) if engines is None else engines,
+        resolved_engines,
         max_concurrent=settings.ld_max_concurrent_runs,
         policy=coarse_task_policy(bl),
     )
@@ -92,6 +94,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await tm.open()
+        # 重启核对（票 04）：以持久化状态为输入，恢复或转等待核实，绝不盲目重试
+        await reconcile_on_startup(tm, resolved_engines, dispatcher)
         dispatcher.start()
         gate.start()
         try:
