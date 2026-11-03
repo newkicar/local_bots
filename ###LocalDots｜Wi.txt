@@ -1,0 +1,585 @@
+### Local Dots｜Windows 本地 AI 助手完整实施方案 V1.0  
+DeepAgentsCodexJarvisWindowsCloudflare  
+Thomas，我们前面讨论了很多架构和实现方式，现在可以收敛成一个相对简单、可落地的方案。  
+最终决定：不再从零开发多个 Agent，而是基于 DeepAgents 创建一个个人秘书，复用你现有的 Codex CLI 和 Jarvis，让你从手机或其他电脑远程给公司电脑安排任务。  
+整个项目先不涉及硅基 SSC，也不追求完全复刻 Dots 的每一个功能。
+
+### 一、产品目标  
+你想要的 Local Dots，应该具备六项核心能力：
+
+- 随时接收任务：你在手机上给秘书安排工作，不用等待前一项任务完成。
+- 异步执行：秘书把工作分配给 Codex 或 Jarvis，二者可以并行运行。
+- 动态操作本机文件：能够搜索多层级目录、定位文件、列出目录内容，并在选定路径下启动 Agent。
+- 连续对话：每个工作拥有独立上下文，后续追问能够回到原来的 Codex/Jarvis Thread。
+- 主动汇报：任务完成、失败或者需要审批时，保存结果并通知你；你关掉网页后不会丢任务。
+- 公网访问：在公司授权的条件下，通过手机浏览器安全访问办公室里的 Windows 电脑。
+
+第一版暂时不做语音、多个固定专家 Agent、复杂长期记忆、企业级分布式系统，也不开发独立手机 App。
+
+### 二、最终系统架构  
+Thomas  
+手机浏览器 / 电脑浏览器  
+HTTPS · Cloudflare Access + Tunnel  
+Local Dots Web Service · FastAPI  
+聊天接口、任务列表、审批、进度通知  
+Secretary · DeepAgent  
+理解意图 · 文件定位 · 路由任务 · 汇总结果  
+Task Manager · Python + SQLite  
+持久化队列 · 独立 Thread · 并发 · 恢复 · 通知  
+Codex Adapter  
+复用现有  
+Codex Runtime → mimo2codex → 第三方 API  
+Jarvis Adapter  
+复用现有  
+原有 DeepAgent + Tools + Skills  
+公司 Windows 电脑  
+经过授权的目录、文件、命令和应用
+
+### 技术选型定稿
+
+|
+| --- | --- | --- |
+| 模块 | 技术 | 决定 |
+| 个人秘书 | DeepAgents | 新建一个轻量主代理 |
+| 秘书的模型 | DeepAgents 模型接口 | 独立配置，不依赖 Codex 模型 |
+| 执行引擎 A | Codex Python SDK / CLI | 复用现有 Codex |
+| 执行引擎 B | Jarvis DeepAgent | 复用现有 Jarvis |
+| 任务队列 | Python Asyncio + SQLite | 暂不引入 Redis、Celery |
+| 对话状态 | LangGraph Checkpointer | 使用独立 Thread ID |
+| 本地服务 | FastAPI | 同时提供网页和 API |
+| 前端 | HTML + JavaScript | 一套响应式网页 |
+| 文件操作 | DeepAgents 内置工具 | 不重复开发文件读写逻辑 |
+| 公网连接 | Cloudflare Tunnel + Access | 身份验证后访问 |
+| 本地部署 | Windows Python 环境 | 不要求 Docker |
+
+这次不强制使用
+
+```
+AsyncSubAgent
+```
+
+  
+。  
+它确实支持非阻塞的后台 Agent，但依赖 Agent Protocol 兼容的执行服务。你已经有两个独立执行器，因此第一版用轻量适配器 + 异步任务队列，反而更省开发工作。LangChain Reference +1
+
+### 三、Codex 和 Jarvis 怎样接入
+
+### 3.1 Codex：保持现有 mimo2codex 配置  
+你目前的运行方式是：
+
+```
+Codex CLI → config.toml → mimo2codex → 第三方模型 API
+```
+
+  
+  
+新系统保持这条链路。  
+Local Dots 优先通过官方 Python SDK 调用 Codex。SDK 支持异步调用、指定
+
+```
+cwd
+```
+
+  
+、恢复 Thread 和读取执行结果。SDK 默认使用自身匹配的 Codex Runtime，所以需要验证它能否继承你现有的第三方提供商配置。GitHub +1  
+示例：
+
+```
+from openai_codex import AsyncCodex, Sandbox
+
+async def run_codex(prompt, cwd):
+    async with AsyncCodex() as codex:
+        thread = await codex.thread_start(
+            cwd=cwd,
+            sandbox=Sandbox.read_only,
+        )
+        result = await thread.run(prompt)
+
+        return {
+            "thread_id": thread.id,
+            "response": result.final_response
+        }
+```
+
+  
+这是单次调用示例。正式实现要把 Thread ID 在创建后立即写入数据库，而不是等任务结束才保存。需要修改代码时，再根据任务授权切换到
+
+```
+workspace_write
+```
+
+  
+。  
+如果官方 SDK 与你现有的 mimo2codex 配置不兼容，就改用：
+
+```
+codex exec -C "D:\Projects\Demo" --json "分析当前项目结构"
+```
+
+  
+用 Python 异步子进程调用你已经验证可用的 Codex CLI。官方支持
+
+```
+codex exec
+```
+
+  
+ 的 JSON 事件输出和按 Session ID 恢复任务。ChatGPT Learn +1  
+因此，SDK 是优选接入方式，不是整个项目的技术前提。
+
+### 3.2 Jarvis：保留 TUI，只暴露 Agent Core  
+你现在的 Jarvis 是 Python 项目，通过
+
+```
+create_deep_agent()
+```
+
+  
+ 构建，并且有自己开发的 TUI。  
+我们只需要让它的核心 Agent 可以被其他 Python 程序调用。  
+改造前：
+
+```
+Jarvis TUI
+    └── create_deep_agent()
+          ├── Model
+          ├── Tools
+          └── Skills
+```
+
+  
+改造后：
+
+```
+Jarvis Agent Core
+    ├── 原 Jarvis TUI
+    └── Local Dots Adapter
+```
+
+  
+最小修改：
+
+- 提取一个
+  
+  ```
+  create_jarvis(workspace, checkpointer)
+  ```
+  
+    
+   工厂函数。
+- 保留原有模型、Skills、Tools、Middleware。
+- 将 Jarvis 的工作目录参数化。
+- 确保导入 Agent 模块时不会自动启动 TUI。
+- 通过
+  
+  ```
+  .ainvoke()
+  ```
+  
+    
+   按不同
+  
+  ```
+  thread_id
+  ```
+  
+    
+   调用。
+- 使用持久化 Checkpointer，确保同一会话后续可以继续。
+
+例如：
+
+```
+agent = create_jarvis(
+    workspace=r"D:\Projects\Demo",
+    checkpointer=checkpointer,
+)
+
+result = await agent.ainvoke(
+    {"messages": [{"role": "user", "content": prompt}]},
+    config={
+        "configurable": {
+            "thread_id": thread_id
+        }
+    }
+)
+```
+
+  
+这个代码是接口设计，不是对你 Jarvis 现有代码结构的假定。  
+还有一个重要限制：不同任务不能通过
+
+```
+os.chdir()
+```
+
+  
+ 反复切换整个 Python 进程的目录。Jarvis 的文件后端与 Shell 工具都需要明确使用对应任务的 Workspace。
+
+### 四、动态文件搜索与工作目录管理  
+我们已经确定：不用让你提前登记所有项目文件夹，也不用每次都选择 Project。  
+Local Dots 应该能够自己定位文件夹，再根据你的指令，在那个文件夹中启动 Jarvis 或 Codex。
+
+### 一段完整的操作流程
+
+- 你： 帮我在 D 盘找到「工资汇总」文件夹，列出它的子目录。秘书使用 DeepAgents 内置文件工具进行搜索和目录浏览，前提是该路径已获得授权。
+- 秘书： 找到对应目录。
+  
+  ```
+  D:\...\工资汇总
+  ```
+  
+    
+    
+  2024年  
+  2025年  
+  2026年  
+  仅为路径结构示例，不是真实文件搜索结果。
+- 你： 在里面那个 2026年的文件夹下打开 Jarvis。  
+  秘书从上一轮文件浏览上下文定位文件夹，检查授权，然后创建一个新的 Jarvis Thread，并绑定该工作目录。
+- 秘书： Jarvis 会话已创建，可以继续与它对话。  
+  手机网页切换到对应 Jarvis 会话；不需要在远端 Windows 桌面实际打开 TUI 窗口。
+
+### 文件能力如何实现  
+DeepAgents 已经提供
+
+```
+ls
+```
+
+  
+、
+
+```
+glob
+```
+
+  
+、
+
+```
+grep
+```
+
+  
+、
+
+```
+read_file
+```
+
+  
+ 等工具，实际访问位置由 Backend 决定。LangChain Reference +1  
+我们可以利用这些工具完成日常文件浏览，但对跨多层级、范围很大的目录搜索，应设置超时和结果数量上限。如果内置
+
+```
+glob
+```
+
+  
+ 无法可靠完成整盘搜索，再增加一个简单的本地只读目录索引工具即可，不需要重新写完整文件系统。  
+安全上要分开两层：
+
+- 秘书：默认只允许在获授权范围内进行目录发现和只读查询。
+- Jarvis/Codex：在你明确指定的 Workspace 内，根据任务获得读写或执行权限。
+
+官方明确提醒，
+
+```
+FilesystemBackend
+```
+
+  
+ 直接访问真实磁盘，不适合无隔离地交给面向公网的 Web 服务；
+
+```
+virtual_mode=True
+```
+
+  
+ 也不是操作系统级沙箱。LangChain Reference +1  
+因此文件访问权限必须由 Python 服务端与 Windows 账户共同限制，不能仅靠 Prompt。
+
+### 五、任务管理：解决你最初发现的「假异步」问题  
+这是整个项目最重要的部分。  
+我们让 Secretary 只负责接收、理解、委派、查询与汇报，不在自己的工具调用里等待 Codex 或 Jarvis 完成。  
+你提交任务  
+Task Manager  
+写入 SQLite，返回 Task ID  
+秘书结束本轮委派  
+可以继续接受新任务  
+后台 Dispatcher  
+独立领取任务，调度 Codex/Jarvis  
+完成 → 保存结果 → 产生通知 → 用户查看或继续
+
+### 任务管理器提供的工具
+
+|
+| --- | --- |
+| 工具 | 作用 |
+| submit\_task | 创建后台任务、指定引擎和路径 |
+| list\_tasks | 查询全部任务 |
+| get\_task | 读取任务状态、日志和结果 |
+| followup\_task | 沿用原 Thread 继续工作 |
+| cancel\_task | 申请取消任务 |
+| start\_agent\_session | 在指定目录创建可交互的 Jarvis/Codex 会话 |
+
+其中
+
+```
+start_agent_session
+```
+
+  
+ 和
+
+```
+submit_task
+```
+
+  
+ 有区别：前者是「打开一个 Agent，准备与它对话」，后者是「交付一项工作，让它完成」。
+
+### Task、Thread、Run 必须分开
+
+```
+{
+  "task_id": "T001",
+  "engine": "jarvis",
+  "engine_thread_id": "jarvis_abc123",
+  "workspace": "D:\\Projects\\Demo",
+  "status": "running",
+  "parent_task_id": null
+}
+```
+
+- ```
+  task_id
+  ```
+  
+    
+  ：Local Dots 内的业务任务。
+- ```
+  engine_thread_id
+  ```
+  
+    
+  ：Codex 或 Jarvis 的会话标识。
+- ```
+  workspace
+  ```
+  
+    
+  ：该任务使用的工作目录。
+- ```
+  run_id
+  ```
+  
+    
+  ：每次具体执行的记录。
+
+第二次追问同一个任务时，继续使用原来的
+
+```
+engine_thread_id
+```
+
+  
+。对同一 Thread 的并发写入和执行要串行化，避免状态冲突。  
+任务状态建议使用：
+
+```
+QUEUED → RUNNING → COMPLETED → REPORTED
+```
+
+  
+  
+并提供
+
+```
+WAITING_APPROVAL
+```
+
+  
+、
+
+```
+FAILED
+```
+
+  
+、
+
+```
+CANCELLED
+```
+
+  
+ 和
+
+```
+INTERRUPTED
+```
+
+  
+ 等分支。
+
+### 崩溃恢复  
+SQLite 保存任务队列和状态。LangGraph Checkpointer 保存 Agent 的执行上下文，这是两种不同的数据。  
+Windows 服务重启后：
+
+- 重新读取尚未结束的任务。
+- 检查对应 Codex/Jarvis Thread 和实际执行状态。
+- 可安全继续的任务再恢复。
+- 无法确认是否已经产生外部副作用的任务，暂停并请求核实。
+- 保留尚未向你汇报的结果。
+
+LangGraph 的
+
+```
+AsyncSqliteSaver
+```
+
+  
+ 可以用于个人本地轻量部署，但官方不建议把它当成高并发生产环境的最终方案；如果未来任务规模明显增加，再考虑 PostgreSQL。GitHub +1  
+第一版不需要消息队列服务器。 一套 SQLite 持久化队列、一个 Dispatcher 和有限数量的异步 Worker 就足够。
+
+### 六、电脑和手机如何使用  
+我建议只做一个 Web UI，电脑和手机共用。  
+Local Dots  
+界面设计示意  
+聊天任务会话  
+你： 让 Codex 分析项目 A，Jarvis 整理项目 B。  
+秘书： 已经创建两个后台任务：  
+T001 · Codex 分析项目 A  
+T002 · Jarvis 整理项目 B  
+你可以继续安排工作。  
+静态交互示意，并未连接实际任务或公司电脑。  
+FastAPI 负责提供聊天 API、任务管理 API、会话 API 和 SSE 事件推送。Web UI 使用原生 HTML/CSS/JavaScript 即可；不需要另外开发 Windows GUI 或手机 App。  
+Jarvis 原来的 TUI 继续保留。
+
+### Cloudflare 远程连接  
+访问关系：
+
+```
+手机 → Cloudflare Access → Cloudflare Tunnel → localhost:8000
+```
+
+  
+  
+Cloudflare 官方支持将公开域名映射到本地服务，并使用 Access 进行身份验证。Cloudflare Docs +1  
+部署时应满足：
+
+- FastAPI 仅监听
+  
+  ```
+  127.0.0.1
+  ```
+  
+    
+  。
+- Cloudflare Access 只允许指定身份进入，启用 MFA。
+- 后端验证用户身份及操作权限。
+- API 密钥、Codex 凭据、mimo2codex 端口均不对公网开放。
+- 公司 IT 明确批准这种远程访问及 Agent 执行方式。
+
+这最后一点尤其重要。即使你日常使用 Codex 的工作不涉密，公司电脑依然可能接触企业内网、账号或受保护文件。远程 Agent 的授权范围必须比电脑当前用户能访问的范围更明确。未获得许可时，先在个人或获批设备的非敏感目录上验证。
+
+### 七、项目文件结构  
+这是我建议交给 Codex 创建的目录：
+
+```
+local-dots/
+│
+├── app/
+│   ├── main.py                 # FastAPI 入口
+│   ├── secretary.py            # DeepAgents 主秘书
+│   ├── task_manager.py         # 任务持久化与状态
+│   ├── dispatcher.py           # 异步调度和恢复
+│   ├── session_manager.py      # Thread 与路径关联
+│   ├── permissions.py          # 目录、工具权限和审批
+│   │
+│   └── adapters/
+│       ├── base.py             # 统一 Agent 接口
+│       ├── codex.py            # Codex SDK / CLI
+│       └── jarvis.py           # Jarvis Graph 适配器
+│
+├── web/
+│   ├── index.html
+│   ├── app.js
+│   └── style.css
+│
+├── data/
+│   ├── tasks.db
+│   └── checkpoints.db
+│
+├── workspace/                  # 任务输出及临时文件
+├── tests/
+├── .env.example
+└── pyproject.toml
+```
+
+  
+Jarvis 原项目不合并到 Local Dots 里面。通过独立 Python 包或适配层复用其核心能力，避免新系统破坏原来的 TUI。
+
+### 八、实施顺序
+
+### 01  
+复用现有 Agent  
+将 Jarvis 的 Agent Core 与 TUI 分离，验证独立 Thread。再验证 Codex SDK 是否能继承 mimo2codex；不能就使用 CLI 适配器。  
+首先完成
+
+### 02  
+后台任务管理  
+实现 SQLite 任务队列、异步 Dispatcher、Task ID、Thread 关联、状态查询、结果保存、重启核对。
+
+### 03  
+DeepAgents 秘书  
+接入任务管理工具和受限文件系统工具，实现自然语言任务路由、动态目录定位、创建会话和后续追问。
+
+### 04  
+Web UI 与本地持久在线  
+实现聊天、任务列表、结果通知和审批。配置 Windows 登录后启动，并验证关闭网页不会停止后台任务。
+
+### 05  
+公网访问  
+本地测试通过、获得公司授权后，再配置 Cloudflare Access 和 Tunnel，并完成手机端身份验证与权限测试。
+
+### 九、V1.0 验收标准  
+我认为有六项必须通过的测试：
+
+|
+| --- | --- |
+| 测试 | 通过标准 |
+| 多任务执行 | 连续提交三项任务，不需要等待前一项完成 |
+| 多引擎复用 | Codex 与 Jarvis 保持现有模型和 Skills |
+| 动态工作目录 | 找到目录后，可以在其中启动指定 Agent |
+| 上下文隔离 | 对原任务追问，不会混入其他任务上下文 |
+| 可靠性 | 关闭网页不停止任务；服务重启不丢记录、不盲目重试 |
+| 远程操作 | 经授权的手机能够查看任务、发送指令并接收结果 |
+
+如果上述测试都通过，Local Dots 就完成了第一个真正可用的版本。  
+当前版本的「远程操作电脑」，特指通过 Agent 对授权文件、程序和工具执行操作。实时看屏幕、接管鼠标和键盘属于另一类远程桌面能力，不纳入 V1.0；Windows 锁屏或睡眠时的限制也不能靠 Agent 框架绕过。
+
+### 十、最终确认的技术原则  
+Local Dots 不是重新开发 Codex，也不是重新开发 Jarvis。  
+它需要新增的只有四个真正重要的部分：
+
+- Secretary：理解你的指令，使用已有工具定位工作环境。
+- Task Manager：把工作交给 Codex/Jarvis，记录执行状态，防止任务遗失。
+- Remote Web UI：让你从手机继续聊天、查看结果和审批操作。
+- Permission Layer：确保本机文件和工具只能在获批准的范围内被使用。
+
+而且第一版不必创建新的固定专业子代理、向量数据库、复杂多 Agent 协议或独立桌面应用。  
+下一步最有价值的工作：先让 Codex 检查 Jarvis 的
+
+```
+create_deep_agent()
+```
+
+  
+ 初始化代码、TUI 入口、Checkpoint、文件 Backend 和 Shell 工具，确认如何把它封装成可重复调用的 Agent Core。与此同时，做一个 Codex SDK + mimo2codex 的连通性验证。  
+这两项通过后，整个系统最不确定的技术问题就基本消除了，可以开始实现 Task Manager 和 Web UI。  
+主要技术依据：  
+[Codex Python SDK API Reference](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md?utm_source=chatgpt.com)⁠DeepAgents 官方开发文档⁠Cloudflare Tunnel 官方部署指南⁠  
+这份方案可以作为 Local Dots V1.0 的开发基线。 后续由 Codex 按模块实施，每完成一个阶段就运行对应验收测试，不再反复扩张架构。
