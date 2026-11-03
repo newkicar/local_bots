@@ -1,7 +1,7 @@
 """Local Dots V1.0 服务入口（FastAPI，仅监听 127.0.0.1）。
 
 票 01 骨架：Bearer Token 认证 + 任务 API + SSE 状态推送。
-票 02 起挂载 codex 真实引擎（默认 sandbox read-only + 粗粒度黑名单兜底）；票 05 加 jarvis。
+票 02 起挂载 codex 真实引擎（默认 sandbox read-only + 粗粒度黑名单兜底）；票 05 挂载 jarvis（缺省引擎，ADR-0001）。
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from app.settings import Settings, get_settings
 from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
+from app.adapters.jarvis import JarvisAdapter
 from app.approval import ApprovalGate
 from app.dispatcher import Dispatcher
 from app.permissions import Blacklist, coarse_task_policy
@@ -61,7 +62,10 @@ class RejectApproval(BaseModel):
 
 def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
     """票 02 挂 codex（外部 CLI，经 mimo2codex 网关）；票 05 在此加 jarvis。测试注入假引擎。"""
-    return {"codex": CodexAdapter(cli=settings.ld_codex_cli)}
+    return {
+        "codex": CodexAdapter(cli=settings.ld_codex_cli),
+        "jarvis": JarvisAdapter(settings.checkpoints_db_path),
+    }
 
 
 def create_app(
