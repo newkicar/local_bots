@@ -27,7 +27,8 @@ from app.adapters.base import EngineAdapter, EngineError, RunHooks
 logger = logging.getLogger(__name__)
 
 # 鸭子类型 spawn：spawn(cmd: list[str], cwd: str) -> async proc
-# （proc：stdout.readline() / stderr.read() / stdin.write()+drain()+close() / wait() / kill() / pid）
+# （proc：stdout.read(n) 分块读（自组行缓冲，行长限制免疫） / stderr.read() /
+#  stdin.write()+drain()+close() / wait() / kill() / pid）
 SpawnFn = Callable[[list[str], str], Awaitable[Any]]
 
 
@@ -67,17 +68,16 @@ class CodexAdapter(EngineAdapter):
             await self._drain_stdin(proc)
             final_text: str | None = None
             turn_fail: str | None = None
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="replace").strip()
+
+            async def consume(raw: bytes) -> None:
+                nonlocal final_text, turn_fail
+                text = raw.decode("utf-8", errors="replace").strip()
                 if not text:
-                    continue
+                    return
                 try:
                     event = json.loads(text)
                 except json.JSONDecodeError:
-                    continue  # 非 JSON 行（诊断输出）跳过
+                    return  # 非 JSON 行（诊断输出）跳过
                 etype = event.get("type")
                 if etype == "thread.started":
                     tid = event.get("thread_id") or event.get("id")
@@ -89,7 +89,7 @@ class CodexAdapter(EngineAdapter):
                     if itype == "agent_message":
                         final_text = item.get("text") or ""
                     elif itype in ("reasoning", "error", "function_call_output"):
-                        continue
+                        return
                     else:
                         await hooks.side_effect(
                             itype or "unknown",
@@ -98,6 +98,21 @@ class CodexAdapter(EngineAdapter):
                         )
                 elif etype in ("turn.failed", "error"):
                     turn_fail = str(event.get("error") or event.get("message") or text[:300])
+
+            # 分块 read + 自组行缓冲：免疫 StreamReader 默认 64 KiB 行长限制（票 11）：
+            # 单个事件行超限（如大段 agent_message）时 readline() 会抛
+            # "Separator is not found, and chunk exceed the limit"
+            linebuf = b""
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                linebuf += chunk
+                while b"\n" in linebuf:
+                    raw_line, linebuf = linebuf.split(b"\n", 1)
+                    await consume(raw_line)
+            if linebuf:
+                await consume(linebuf)  # EOF 后残留行可能不以换行结尾
             rc = await proc.wait()
             err_tail = (await self._read_stderr(proc))[-500:].strip()
             if turn_fail:
@@ -110,6 +125,10 @@ class CodexAdapter(EngineAdapter):
             return final_text if final_text else "（codex 未产出最终回复）"
         except asyncio.CancelledError:
             # 取消/关停：终止子进程树后原样抛出（Dispatcher 落 cancelled/interrupted）
+            self._kill_tree(proc, injected=self._spawn is not None)
+            raise
+        except BaseException:
+            # 其他崩溃路径（EngineError / 解析异常等）：同样终止子进程树，防孤儿 CLI 残留
             self._kill_tree(proc, injected=self._spawn is not None)
             raise
 

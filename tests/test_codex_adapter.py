@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import time
 
 import pytest
@@ -63,6 +64,18 @@ class FakeProc:
         if self._lines:
             return self._lines.pop(0)
         return b""
+
+    async def read(self, n: int = -1) -> bytes:
+        """票 11：分块 read 兼容（适配器自组行缓冲，不再依费 readline）。"""
+        if self._block:
+            await self._block_event.wait()
+        if not self._lines:
+            return b""
+        data = self._lines.pop(0)
+        if 0 <= n < len(data):
+            self._lines.insert(0, data[n:])
+            return data[:n]
+        return data
 
     async def wait(self) -> int:
         return self.returncode
@@ -289,3 +302,93 @@ async def test_relative_workspace_yields_absolute_dash_c():
     assert cmd[cmd.index("-C") + 1] == expected_c
     assert os.path.isabs(cmd[cmd.index("-C") + 1])
     assert spawn.calls[0]["cwd"] == expected_c
+
+# ---------------------------------------------------------------------------
+# TICKET_11: 长 JSON 事件行越 StreamReader 64 KiB 行长按制（回归，真实子进程管道）
+# ---------------------------------------------------------------------------
+
+async def test_codex_long_json_event_line_real_pipe():
+    """128 KiB agent_message 事件经真实子进程管道（默认 64 KiB StreamReader limit）：
+    修复前 readline() 抛 ValueError: Separator is not found, and chunk exceed the limit。"""
+    from app.adapters.base import RunHooks
+
+    program = (
+        "import json, sys\n"
+        "lines = [\n"
+        "    json.dumps({'type': 'thread.started', 'thread_id': '01BIGLINE'}),\n"
+        "    json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'x' * 131072}}),\n"
+        "    json.dumps({'type': 'turn.completed'}),\n"
+        "]\n"
+        "sys.stdout.write('\\n'.join(lines) + '\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+
+    class _RealPipeSpawn:
+        async def __call__(self, cmd, cwd):
+            return await asyncio.create_subprocess_exec(
+                sys.executable, "-c", program,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+
+    adapter = CodexAdapter(cli="python", spawn=_RealPipeSpawn())
+    ws = os.path.join("tests", "tmp_workspace", "ws_long_line_codex")
+    os.makedirs(ws, exist_ok=True)
+
+    class _Dispatcher:
+        async def thread_bound(self, task_id, thread_id):
+            pass
+
+        async def record_side_effect(self, run_id, kind, detail, path=None):
+            pass
+
+    task = {"task_id": "Tlong", "workspace": ws, "instruction": "\u8f93\u51fa\u957f\u6587\u672c",
+            "engine_thread_id": None, "writes_authorized": False}
+    run = {"run_id": "Rlong"}
+    result = await adapter.execute(task, run, None, RunHooks(task, run, _Dispatcher()))
+    assert result == "x" * 131072
+
+# ---------------------------------------------------------------------------
+# TICKET_11: 异常路径（非取消）同样杀进程树，防孤儿 CLI 残留
+# ---------------------------------------------------------------------------
+
+async def test_codex_crash_path_kills_process_tree():
+    """stdout.read 抛出未预期异常（模拟管道崩溃）：EngineError/crash 路径先终止
+    子进程树再抛出；注入 spawn 时仅 proc.kill() 不 taskkill（_kill_tree injected 分支）。"""
+    proc = FakeProc(events=[], rc=1)
+
+    class _CrashRead:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def read(self, n=-1):
+            raise RuntimeError("pipe exploded")
+
+    class _CrashSpawn:
+        def __init__(self):
+            self.calls = []
+
+        async def __call__(self, cmd, cwd):
+            self.calls.append((cmd, cwd))
+            proc.stdout = _CrashRead(proc.stdout)
+            return proc
+
+    from app.adapters.base import RunHooks
+
+    spawn = _CrashSpawn()
+    adapter = CodexAdapter(cli="codex", spawn=spawn)
+    ws = os.path.join("tests", "tmp_workspace", "ws_crash_codex")
+    os.makedirs(ws, exist_ok=True)
+
+    class _Dispatcher:
+        async def thread_bound(self, task_id, thread_id):
+            pass
+
+        async def record_side_effect(self, run_id, kind, detail, path=None):
+            pass
+
+    task = {"task_id": "Tcrash", "workspace": ws, "instruction": "x",
+            "engine_thread_id": None, "writes_authorized": False}
+    run = {"run_id": "Rcrash"}
+    with pytest.raises(RuntimeError):
+        await adapter.execute(task, run, None, RunHooks(task, run, _Dispatcher()))
+    assert proc.killed is True
