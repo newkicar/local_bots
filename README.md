@@ -30,6 +30,20 @@ pip install "https://github.com/newkicar/truly-jarvis/archive/refs/heads/main.zi
 ```
 （Jarvis 是独立仓库 `newkicar/truly-jarvis`，直接从 GitHub 安装，无需自行 clone；前提是该仓库为公开仓库。）
 
+**本地已经装过 Jarvis 的话**（比如克隆过 `truly-jarvis` 并跑过 `pip install -e .`，或之前已装过上面那个 zip）不用重复安装，先确认两点：
+
+1. **jarvis 和 local_dots 在同一个 Python 环境里吗**：
+   ```powershell
+   python -c "import jarvis; print(jarvis.__file__)"
+   ```
+   能打印出路径 → 当前环境就有 jarvis，直接跳过本步即可。
+2. **别用 zip 再装一份覆盖可编辑安装**：如果你用的是本地克隆 + `pip install -e .`，再跑一遍 zip 安装会堅进一份冻结的远程副本，冲抵你本地正在改的那份 jarvis，local_dots 也用不上你的本地改动。
+3. **jarvis 装在别的环境里的话**（另一个 venv / 另一个解释器）：改用那个环境当中的 pip 安装 local_dots，保证两者同环境：
+   ```powershell
+   D:\path\to\venv\Scripts\python -m pip install -e .
+   ```
+
+
 ## ③ 创建配置文件
 
 把 `.env.example` 复制为 `.env` （同目录），用任何编辑器打开：
