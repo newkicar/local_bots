@@ -10,7 +10,7 @@
   （结果可拿回 = 终态可达且结果/原因可查）；
 - ③ 秘书自然语言派活走真 DeepAgents（mimo2codex 网关）+ 动态工作目录；
 - ⑤b 真实进程重启做启动核对（restart_check → waiting-approval → 人工拒绝）；
-- ⑥ 全部操作在回环内完成；公网通道 = 票 09（deferred，待 IT 批准）。
+- ⑥ 全部操作在回环内完成；公网通道 = 票 09（deferred）。
 
 幂等：开跑清 BASE；结束必停所启服务（定向 PID，绝不野杀）。
 本文件不以 test_ 开头，pytest 不收集。
@@ -365,7 +365,7 @@ def check6_remote() -> dict:
                 "GET /api/health 与 GET /api/events?token=（健康 / SSE 实时）",
             ],
             "no_token_health": r.status_code,
-            "note": "本次全部操作在回环完成；真正的手机/远端访问 = 票 09 Cloudflare 通道（待公司 IT 批准，deferred）",
+            "note": "本次全部操作在回环完成；真正的手机/远端访问 = 票 09 Cloudflare 通道（deferred）",
         },
     }
 

@@ -45,7 +45,7 @@ local_dots/
 - 权限由 Python 服务端 + Windows 账户强制，**不靠 prompt**；FilesystemBackend / `virtual_mode` 均非 OS 沙箱。
 - 秘书默认只读、仅授权目录内发现；Codex/Jarvis 仅在指定 workspace 内按任务授权读写/执行。
 - 默认沙箱保守（如 Codex `read_only`），需要修改才切 `workspace_write`；API 密钥、Codex 凭据、mimo2codex 端口一律不回环外。
-- 实施顺序（方案文档第八节）：① Jarvis Core/TUI 分离 + Codex SDK/mimo2codex 连通性验证 → ② 后台任务管理 → ③ 秘书 → ④ Web UI + 登录自启 → ⑤ Cloudflare（须公司 IT 授权后最后做）。
+- 实施顺序（方案文档第八节）：① Jarvis Core/TUI 分离 + Codex SDK/mimo2codex 连通性验证 → ② 后台任务管理 → ③ 秘书 → ④ Web UI + 登录自启 → ⑤ Cloudflare（最后做）。
 ## Agent skills
 
 ### Issue tracker

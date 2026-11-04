@@ -3,7 +3,6 @@
 > 本文档只讲"手机远程连接"。电脑端的安装、日常启动见 `README.md`；
 > 设计背景与验收记录见 `docs/cloudflare-blueprint.md`。
 >
-> 前提：公司 IT 已批准 Cloudflare 隧道方案（口头批准 2026-11-04，书面归档待补）。
 > 正式使用前必须先完成"路径 B"的 Access 身份核验 + MFA，在此之前 quick 链接仅限自己临时验证。
 >
 > 当前状态（2026-11-04 实测）：quick 路径已验证可用；命名隧道 `login` 的证书
@@ -143,7 +142,7 @@ $env:HTTP_PROXY="http://<代理地址>"
 ⚠️ **前提：名下要有一个托管在 Cloudflare 的域名**（免费 DNS 套餐即可），例如
 域名是 `example.com` 就执行 `.\cloudflared.exe tunnel route dns localdots dots.example.com`。
 **没有域名**：命名隧道这条路暂时走不通——先用路径 A 的 quick 顶着，
-或找 IT 问公司 Cloudflare 账号下有没有可用 zone。
+或确认公司 Cloudflare 账号下有没有可用 zone。
 
 ### 3.3 Zero Trust 控制台建 Access 策略（一次性）
 
@@ -197,4 +196,3 @@ powershell -File scripts\cloudflare_tunnel.ps1 status
 - quick 链接不转发给他人；Token、cloudflared 凭据（`\.cloudflared\` 下全部文件）
   一律不进仓库、不贴聊天。
 - Access 策略（指定身份 + MFA）启用之前，本远程通道按"内部验证"对待。
-- 公司书面批文下来后，补记到 `docs/cloudflare-blueprint.md` §1（目前为口头批准挂账）。

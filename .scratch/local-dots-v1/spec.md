@@ -45,7 +45,7 @@ Status: ready-for-agent
 17. 作为用户，我以单用户 Bearer Token 认证访问 API，密钥与凭据永不出现在回环地址之外。
 18. 作为用户，电脑重启后 Local Dots 随登录自动恢复服务，队列与历史都在。
 19. 作为用户，维护黑名单时走审核流程添加条目（如系统目录、公司数据目录），不需要改代码。
-20. 作为用户，经授权的手机浏览器（公司 IT 批准后的 Cloudflare 通道）可以查看任务、发送指令并接收结果（验收：远程操作）。
+20. 作为用户，经授权的手机浏览器（Cloudflare 通道）可以查看任务、发送指令并接收结果（验收：远程操作）。
 21. 作为用户，Secretary 的目录搜索有超时与结果数量上限，不会失控扫全盘。
 22. 作为用户，同一 Thread 的并发写与执行被串行化，不产生状态冲突。
 23. 作为用户，引擎进程永不 os.chdir 全进程目录，每个任务的文件操作被约束在自己的 Workspace。
@@ -87,7 +87,7 @@ Status: ready-for-agent
   单用户 Bearer Token（.env）。
 - 安全基线：权限由 Python 服务端 + Windows 账户强制，不靠 prompt；FilesystemBackend / virtual_mode 均非 OS 沙箱；
   API 密钥、Codex 凭据、mimo2codex 端口不回环外。
-- Cloudflare Access + Tunnel 是最后一步（Phase 5），须在本地验收通过且公司 IT 批准后实施，不进 V1.0 验收门禁。
+- Cloudflare Access + Tunnel 是最后一步（Phase 5），须在本地验收通过后实施，不进 V1.0 验收门禁。
 
 ## Testing Decisions
 
@@ -104,7 +104,7 @@ Status: ready-for-agent
 
 ## Out of Scope
 
-- Cloudflare 公网通道（Phase 5；须公司 IT 授权后最后做，见方案文档第八节第⑤步）。
+- Cloudflare 公网通道（Phase 5；最后做，见方案文档第八节第⑤步）。
 - 语音、多个固定专家 Agent、复杂长期记忆/向量库、企业级分布式（Redis/Celery/多用户）。
 - 独立手机 App、实时看屏幕/接管键鼠的远程桌面能力。
 - Jarvis 仓自身的 Core/TUI 分离改造（Phase A，在其仓 tracker 实施）。

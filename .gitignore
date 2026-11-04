@@ -13,7 +13,7 @@ tests/tmp_workspace/
 data/
 workspace/
 
-# Cloudflare tunnel client binary (ticket 09, deferred - IT approval required)
+# Cloudflare tunnel client binary (ticket 09, deferred)
 /cloudflared.exe
 
 # cloudflared quick tunnel 日志（ASCII 路径，见 PHONE_README §2 第 5 条）

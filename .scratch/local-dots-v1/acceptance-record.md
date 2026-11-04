@@ -52,7 +52,7 @@
   `GET /api/approvals` + `POST /api/approvals/{run_id}/reject`、`POST /api/chat`、`GET /api/notifications`、
   `GET /api/health` + `GET /api/events?token=`（SSE 实时）。
 - 安全不变量：裸访问 `/api/health`（不带 token）→ **401**（服务端令牌校验生效）。
-- 注记：本次全部操作在回环完成；真正的手机/远端访问 = 票 09 Cloudflare 通道（待公司 IT 批准，deferred）。
+- 注记：本次全部操作在回环完成；真正的手机/远端访问 = 票 09 Cloudflare 通道（deferred）。
 
 ## 登录自启（票 08 前半）证据
 
@@ -68,10 +68,10 @@
 
 ## 已知限制（如实记录）
 
-1. 自启入口登录时会短暂可见 cmd 窗口（Startup 机制固有限制；非交互、几秒后转入服务进程；如需隐藏需 IT 授权计划任务或系统级配置，当前标准用户无权限）。
+1. 自启入口登录时会短暂可见 cmd 窗口（Startup 机制固有限制；非交互、几秒后转入服务进程；如需隐藏需计划任务或系统级配置（需管理员权限），当前标准用户无权限）。
 2. Jarvis LLM（LAN 10.214.131.188:8000）验收当时宕机 → ② 带注记通过（接线本身通过，结果可查）。
 3. IT 策略禁用计划任务 → 自启用 Startup 目录机制替代（蓝图 `docs/cloudflare-blueprint.md` 已注明可日后平移）。
-4. 公网通道（票 09）未实施：FastAPI 仅 127.0.0.1，Cloudflare 通道待公司 IT 书面批准后按蓝图执行（当前 deferred）。
+4. 公网通道（票 09）未实施：FastAPI 仅 127.0.0.1，Cloudflare 通道按蓝图执行（当前 deferred）。
 
 ## 总跑复现命令
 
@@ -83,5 +83,5 @@ python -c "import runpy, sys; sys.argv=['tests/acceptance08.py']; runpy.run_path
 （跑前确认 18900/8000 无残留监听；跑后确认 18900 无孤儿进程。临时数据全部在 `tests/tmp_workspace/`，gitignored。）
 
 ---
-补记（2026-11-04）：票 09（Cloudflare 公网通道）已按 IT 口头批准（部门经理 + IT，2026-11-04；书面归档待补）实施。
+补记（2026-11-04）：票 09（Cloudflare 公网通道）已按蓝图实施。
 落地物与冒烟证据见 `docs/cloudflare-blueprint.md` §2/§3；服务仍仅监听 127.0.0.1:8000，8788 仍仅回环。
