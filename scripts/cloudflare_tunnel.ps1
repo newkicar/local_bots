@@ -93,6 +93,11 @@ function Run-QuickTunnel {
   Test-Binary
   Write-Host "!!! 警告：quick tunnel 无 Access/MFA，公网匿名可达（仅开发/冒烟，用完即停）！" -ForegroundColor Yellow
   Write-Host "!!! 生产请使用命名隧道 + Access 策略（见 setup）。" -ForegroundColor Yellow
+  # Drop any dead proxy left in this session (e.g. AI-exec env); cloudflared needs direct outbound.
+  # Mirrors PHONE_README.md section 1 item 3.
+  foreach ($v in "HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy") {
+    if (Test-Path "env:$v") { Remove-Item "env:$v" -ErrorAction SilentlyContinue }
+  }
   & $Cf --no-autoupdate "tunnel" "--url" $Backend
 }
 

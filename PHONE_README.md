@@ -5,6 +5,9 @@
 >
 > 前提：公司 IT 已批准 Cloudflare 隧道方案（口头批准 2026-11-04，书面归档待补）。
 > 正式使用前必须先完成"路径 B"的 Access 身份核验 + MFA，在此之前 quick 链接仅限自己临时验证。
+>
+> 当前状态（2026-11-04 实测）：quick 路径已验证可用；命名隧道 `login` 的证书
+> 下载在本机网络不稳（TLS reset/timeout，见 §3.1 故障③），修通前先用 quick 顶着。
 
 ## 0. 原理（一句话说清）
 
@@ -25,6 +28,11 @@
 2. **cloudflared 就位**：仓库根目录有 `cloudflared.exe`（二进制不入库，本机自备；
    缺了脚本会直接报红并提示）。
 
+3. **清掉死代理残留**：本终端若被注入过失效代理（如 AI 代理 exec 会话留下的
+   `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY=http://127.0.0.1:9`），cloudflared 直连会挂死。
+   `scripts\cloudflare_tunnel.ps1 quick` 已内置清理；手动直调 `cloudflared.exe` 的，
+   需自己在同一窗口先 `Remove-Item env:HTTP_PROXY,env:HTTPS_PROXY,env:ALL_PROXY` 再跑。
+
 ## 2. 路径 A：quick 临时链接（只用于验证连通，无 MFA）
 
 1. 电脑端执行：
@@ -38,8 +46,22 @@
 
    ⚠️ 三条铁律：
    - 该链接**没有身份核验，谁拿到谁都能进**，只发给你自己；
-   - Ctrl+C / 关窗口即停，URL 立即失效（每次 quick 都是新 URL）；
+   - Ctrl+C / 关窗口 / 电脑重启即停，URL 立即失效（每次 quick 都是新 URL）；
    - 仅限开发验证，**正式工作一律走路径 B**。
+
+4. **预热期 30–90 秒**：刚打印的 URL 首访可能报 1033 / 一直转圈，属正常
+   （Cloudflare 节点还在拉齐路由），等 1 分钟再试即可。
+
+5. **后台长期挂着（可选）**：不想占一个终端时，分离进程启动：
+
+   ```powershell
+   Start-Process -WindowStyle Hidden -FilePath ".\cloudflared.exe" `
+     -ArgumentList 'tunnel --url http://127.0.0.1:8000 --no-autoupdate --logfile cf_quick.log'
+   ```
+
+   - 日志路径必须 ASCII（cloudflared 对中文路径有 bug）；仓库根 `D:\Python Project\local_dots`
+     是 ASCII，写到根目录即可（`cf_quick.log` 已 gitignore）。
+   - 每次启动都是新 URL、旧的作废——重读日志拿新地址；停：`Stop-Process -Name cloudflared`。
 
 ## 3. 路径 B：正式命名隧道 + Access 身份 + MFA（一次性 setup）
 
@@ -95,6 +117,16 @@ $env:HTTP_PROXY="http://<代理地址>"
 
 （查出来为空 = 系统未配代理，那说明是公司 DNS/防火墙拦 CLI：换个干净网络
 比如手机热点再试，成功一次即可，凭据落盘后以后不再需要。）
+
+**常见故障 ③：浏览器点完 Allow，终端却一直 `Waiting for login...`，`~\.cloudflared\` 始终空**
+（2026-11-04 本机实测命中）：浏览器授权能通，但 CLI 自己直连
+`login.cloudflareaccess.org` 下载证书时被网络层 TLS 掐掉（reset/timeout），与代理无关。
+处置：
+
+1. 错峰重试（有随机成功窗口，换个干净网络更稳）；成功一次凭据即落盘，以后不再需要；
+2. 备选（尚未实测）：**API Token 免交互**——Cloudflare 控制台 My Profile → API Tokens
+   建 token，写入 `$env:USERPROFILE\.cloudflared\cfcli.json` 或设 `CLOUDFLARE_API_TOKEN`
+   环境变量，之后 `tunnel create localdots` 等命令走 API、免浏览器。
 
 ### 3.2 创建命名隧道 + 绑定域名（一次性）
 
@@ -156,6 +188,8 @@ powershell -File scripts\cloudflare_tunnel.ps1 status
 | 隧道通但 401 / Token 失效 | 手机填的 token 和 `.env` 的 `LD_API_TOKEN` 不一致，重新复制 |
 | quick URL 突然失效 | 正常：quick 每次执行生成新 URL，Ctrl+C 后旧的作废 |
 | 手机一直转圈 / 被拒 | 命名隧道：Access 策略是否放行你的邮箱、MFA 是否完成 |
+| `Waiting for login...` 久等、`\.cloudflared` 空 | 故障③：CLI 直连下载证书被 TLS 掐 → 错峰重试或 API Token 备选（§3.1） |
+| quick URL 首访 1033 / 转圈 | 预热期正常，等 1 分钟再试（§2 第 4 条） |
 | 服务整个没起 | 先按 `README.md` 第 3 节把本机服务拉起来，再开隧道 |
 
 ## 5. 安全须知
