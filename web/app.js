@@ -12,6 +12,7 @@ const state = {
   es: null,
   panel: "chat",
   busy: false,
+  seenNotifs: new Set(),  // 任务通知卡去重（票 10，上限 200 FIFO 淘汰）
 };
 
 function esc(s) {
@@ -19,6 +20,68 @@ function esc(s) {
   d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
 }
+/* ---------- 零依赖 Markdown 渲染（票 10）：先 esc 再转换，链接 URL 白名单 ---------- */
+function mdSafeUrl(u) {
+  const s = String(u || "").trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.toLowerCase().startsWith("mailto:")) return s;
+  if (s === "#" || s.startsWith("/")) return s;
+  return "#";
+}
+function mdInline(t) {
+  let x = t;
+  x = x.replace(/`([^`\n]+)`/g, (m, c) => "<code>" + c + "</code>");
+  x = x.replace(/\*\*([^*\n]+)\*\*/g, (m, b) => "<b>" + b + "</b>");
+  x = x.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, (m, pre, i) => pre + "<i>" + i + "</i>");
+  x = x.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (m, label, url) =>
+    '<a href="' + mdSafeUrl(url) + '" target="_blank" rel="noopener">' + label + "</a>");
+  return x;
+}
+function mdToHtml(src) {
+  const lines = String(src == null ? "" : src).split("\n").map((l) => esc(l));
+  let html = "";
+  let para = [];
+  let list = null;
+  let fence = false;
+  let code = "";
+  const flushPara = () => { if (para.length) { html += "<p>" + para.join("<br>") + "</p>"; para = []; } };
+  const flushList = () => {
+    if (!list) return;
+    html += "<" + list.type + ">" + list.items.map((it) => "<li>" + mdInline(it) + "</li>").join("") + "</" + list.type + ">";
+    list = null;
+  };
+  const flushBoth = () => { flushPara(); flushList(); };
+  for (const raw of lines) {
+    if (/^```/.test(raw)) {
+      if (fence) { html += '<pre class="md-pre"><code>' + code + "</code></pre>"; code = ""; fence = false; }
+      else { flushBoth(); fence = true; }
+      continue;
+    }
+    if (fence) { code += (code ? "\n" : "") + raw; continue; }
+    if (!raw.trim()) { flushBoth(); continue; }
+    const h = raw.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      flushBoth();
+      const lvl = Math.min(h[1].length + 2, 6);
+      html += "<h" + lvl + ' class="md-h">' + mdInline(h[2]) + "</h" + lvl + ">";
+      continue;
+    }
+    const li = raw.match(/^(?:[-*\u2022]|\d+[.)])\s+(.*)$/);
+    if (li) {
+      flushPara();
+      const type = /^\d/.test(raw) ? "ol" : "ul";
+      if (!list || list.type !== type) { flushList(); list = { type, items: [] }; }
+      list.items.push(mdInline(li[1]));
+      continue;
+    }
+    flushList();
+    para.push(raw);
+  }
+  if (fence && code) html += '<pre class="md-pre"><code>' + code + "</code></pre>";
+  flushBoth();
+  return html;
+}
+
 
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers);
@@ -75,6 +138,7 @@ function connectSSE() {
       refreshBadges();
       if (state.panel === "tasks" || state.panel === "results") refreshCurrent();
     }
+    if (ev.type === "notification") chatTaskNotice(ev);
   };
   state.es = es;
 }
@@ -84,6 +148,48 @@ function setConn(ok) {
   c.classList.toggle("ok", ok);
   c.classList.toggle("bad", !ok);
 }
+/* ---------- 聊天面板任务通知卡（SSE notification，票 10）：终态/挂起主动反馈，按 notification_id 去重 ---------- */
+const NOTICE_KINDS = {
+  task_completed: ["任务完成", "ok"],
+  task_failed: ["任务失败", "bad"],
+  task_rejected: ["任务被拒绝", "bad"],
+  task_cancelled: ["任务已取消", "bad"],
+  approval_requested: ["等待审批", "warn"],
+};
+function chatTaskNotice(ev) {
+  const key = ev.notification_id || ev.task_id + ":" + ev.kind;
+  if (state.seenNotifs.has(key)) return;
+  if (state.seenNotifs.size >= 200) state.seenNotifs.delete(state.seenNotifs.values().next().value);
+  state.seenNotifs.add(key);
+  const meta = NOTICE_KINDS[ev.kind] || [ev.kind, "warn"];
+  const p = ev.payload || {};
+  let body;
+  if (ev.kind === "task_completed") body = '<div class="tn-body md">' + mdToHtml(p.result) + "</div>";
+  else if (ev.kind === "task_failed") body = '<div class="tn-body err">' + esc(p.error || "无错误明细") + "</div>";
+  else if (ev.kind === "task_rejected") body = '<div class="tn-body err">' + esc(p.reject_reason || "无拒绝原因") + "</div>";
+  else if (ev.kind === "task_cancelled") body = "<div class='tn-body'>Side-Effect Ledger " + (p.ledger || []).length + " 条（只追加不回滚）</div>";
+  else if (ev.kind === "approval_requested") body = "<div class='tn-body'>" + esc(p.run_id || "") + "（原因 " + esc(p.wait_reason || "—") + "）</div>";
+  else body = '<div class="tn-body">' + esc(JSON.stringify(p)) + "</div>";
+  const isApproval = ev.kind === "approval_requested";
+  const card = document.createElement("div");
+  card.className = "msg assistant task-notice " + meta[1];
+  card.innerHTML =
+    '<div class="tn-head"><span class="status ' + meta[1] + '">' + meta[0] + '</span> ' +
+    '<span class="muted">' + esc(ev.task_id || "") + "</span></div>" +
+    body +
+    '<div class="tn-actions"><button class="ghost">' + (isApproval ? "去审批" : "查看结果") + "</button></div>";
+  card.querySelector("button").addEventListener("click", async () => {
+    if (isApproval) { switchPanel("approvals"); refreshApprovals(); return; }
+    switchPanel("results");
+    await refreshResults();
+    const el = H("res-" + ev.task_id);
+    if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+    else openTask(ev.task_id);
+  });
+  H("chat-msgs").appendChild(card);
+  card.scrollIntoView({ block: "end" });
+}
+
 
 /* ---------- 面板切换 ---------- */
 document.querySelectorAll(".tab").forEach((btn) => {
@@ -230,7 +336,7 @@ function detailHtml(t) {
     '<div class="kv"><b>引擎</b> ' + esc(t.engine) + "　<b>线程</b> " + esc(t.engine_thread_id || "—") +
     "　<b>可写</b> " + (t.writes_authorized ? "是" : "否") + "</div>" +
     '<div class="kv"><b>工作区</b> ' + esc(t.workspace || "—") + "</div>" +
-    (t.result ? '<div class="kv"><b>结果</b> ' + esc(t.result) + "</div>" : "") +
+    (t.result ? '<div class="kv"><b>结果</b></div><div class="md">' + mdToHtml(t.result) + "</div>" : "") +
     (t.error ? '<div class="kv" style="color:var(--bad)"><b>错误</b> ' + esc(t.error) + "</div>" : "") +
     (t.reject_reason ? '<div class="kv" style="color:var(--warn)"><b>拒绝原因</b> ' + esc(t.reject_reason) + "</div>" : "") +
     (runs ? '<div class="kv"><b>Run 历史</b></div>' + runs : "") +
@@ -328,6 +434,7 @@ async function refreshResults() {
 function resultCard(t) {
   const card = document.createElement("div");
   card.className = "card";
+  card.id = "res-" + t.task_id;  // 聊天面板通知卡跳转目标
   const ledger = (t.runs || []).flatMap((r) => r.side_effects || []);
   card.innerHTML =
     '<div style="display:flex;gap:8px;align-items:center;cursor:pointer" class="rc-head">' +
@@ -335,7 +442,7 @@ function resultCard(t) {
     "<b>" + esc(t.task_id) + "</b>" +
     '<span class="muted" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
     esc(t.instruction || "") + "</span></div>" +
-    (t.result ? '<div class="kv"><b>结果</b> ' + esc(t.result) + "</div>" : "") +
+    (t.result ? '<div class="kv"><b>结果</b></div><div class="md">' + mdToHtml(t.result) + "</div>" : "") +
     (t.error ? '<div class="kv" style="color:var(--bad)"><b>错误</b> ' + esc(t.error) + "</div>" : "") +
     (t.reject_reason ? '<div class="kv" style="color:var(--warn)"><b>拒绝</b> ' + esc(t.reject_reason) + "</div>" : "") +
     '<div class="kv"><b>Side-Effect Ledger（' + ledger.length + " 条，只追加）</b></div>" +

@@ -91,7 +91,7 @@ body {
 
 /* 任务 / 结果 详情 */
 .detail { background: var(--panel-2); border-radius: 10px; padding: 10px; margin-top: 8px; }
-.kv { font-size: 13px; color: var(--muted); margin: 2px 0; word-break: break-all; }
+.kv { font-size: 13px; color: var(--muted); margin: 2px 0; word-break: break-all; white-space: pre-wrap; }
 .kv b { color: var(--text); font-weight: 600; }
 pre.ledger {
   background: #0b0e12; border: 1px solid var(--border); border-radius: 8px;
@@ -153,3 +153,26 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
   .wrap { padding: 20px; }
   .tabbar { position: static; }
 }
+
+/* 任务通知卡 + Markdown 渲染（票 10） */
+.task-notice { border-left: 3px solid var(--warn); }
+.task-notice.ok { border-left-color: var(--ok); }
+.task-notice.bad { border-left-color: var(--bad); }
+.task-notice.warn { border-left-color: var(--warn); }
+.status.ok { color: var(--ok); border-color: var(--ok); }
+.status.bad { color: var(--bad); border-color: var(--bad); }
+.status.warn { color: var(--warn); border-color: var(--warn); }
+.tn-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.tn-body { font-size: 13px; }
+.tn-body.err { color: var(--bad); }
+.tn-actions { margin-top: 6px; }
+.task-notice .md { max-height: 14em; overflow: auto; }
+.md { font-size: 13px; }
+.md p { margin: 4px 0; }
+.md h3, .md h4, .md h5, .md h6 { color: var(--accent); font-size: 14px; margin: 8px 0 4px; }
+.md ul, .md ol { margin: 4px 0; padding-left: 20px; }
+.md li { margin: 2px 0; }
+.md code { background: #0b0e12; border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; font-family: Consolas, monospace; font-size: 12px; }
+.md pre.md-pre { background: #0b0e12; border: 1px solid var(--border); border-radius: 8px; padding: 8px; overflow-x: auto; }
+.md pre.md-pre code { border: 0; padding: 0; background: transparent; }
+.md a { color: var(--accent); }

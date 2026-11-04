@@ -226,3 +226,17 @@ def test_frontend_no_secret_leak():
             text = f.read_bytes().decode("utf-8")
             assert "ld_api_token" not in text
             assert "local-dots-dev-token" not in text
+
+
+def test_frontend_chat_notices_and_markdown_markers():
+    """票 10：聊天面板任务主动反馈卡（SSE notification → 去重插卡）+ 零依赖 Markdown
+    结果渲染（动态区一定线在浏览器跑）；此处做静态 marker 守门。"""
+    with TestClient(create_app(_settings("web10"))) as c:
+        js = c.get("/app.js")
+        assert js.status_code == 200
+        for marker in ("mdToHtml", "task-notice", "seenNotifs", "mdSafeUrl", "chatTaskNotice"):
+            assert marker in js.text, marker
+        css = c.get("/style.css")
+        assert css.status_code == 200
+        for marker in (".task-notice", "pre.md-pre", ".status.ok"):
+            assert marker in css.text, marker
