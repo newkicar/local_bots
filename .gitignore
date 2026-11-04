@@ -12,3 +12,6 @@ tests/tmp_workspace/
 tests/tmp_workspace/
 data/
 workspace/
+
+# Cloudflare tunnel client binary (ticket 09, deferred - IT approval required)
+/cloudflared.exe
