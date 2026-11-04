@@ -10,6 +10,12 @@
 prompt 经 stdin 注入（exec/resume 均不带位置参数）；--json 逐行事件流：
 thread.started → hooks.thread_bound；item.completed 的 agent_message 为最终回复
 （最后一条胜出），其他 item 类型入 Side-Effect Ledger；turn.failed/error → EngineError。
+
+新任务带 --ephemeral（票 11 E2E）：一次性后台任务不持久化写入用户全局
+线程存储（~/.codex thread_history / thread-writer-locks），避免与用户自己的交互
+会话 / app-server 持有的 active writer 在会话初始化时碰撞（“thread-store conflict
+... already has an active writer，”退出码 1）；resume 不带 --ephemeral（需读已持久线程；
+ephemeral 产生的 thread_id 仅供审计/写库，不可 resume）。
 """
 from __future__ import annotations
 
@@ -144,10 +150,12 @@ class CodexAdapter(EngineAdapter):
     def _build_cmd(self, thread: str | None, ws: str, task: dict[str, Any],
                    run: dict[str, Any]) -> list[str]:
         if thread:
-            # resume 继承会话沙箱（不带 -C/-s）
+            # resume 继承会话沙箱（不带 -C/-s）；resume 必须读持久化线程，不带 --ephemeral
             return [self._cli, "exec", "resume", thread, "--json", "--skip-git-repo-check"]
+        # --ephemeral（票 11 E2E）：不写入用户全局线程存储，避免与用户自己
+        # 的 codex 交互会话 / app-server 共抢 active writer 导致会话初始化失败
         return [self._cli, "exec", "-C", ws, "-s", self._sandbox(task, run),
-                "--json", "--skip-git-repo-check"]
+                "--json", "--skip-git-repo-check", "--ephemeral"]
 
     @staticmethod
     def _sandbox(task: dict[str, Any], run: dict[str, Any]) -> str:

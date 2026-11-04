@@ -141,6 +141,7 @@ def test_codex_submit_lifecycle_flags_stdin_ledger():
         assert cmd[cmd.index("-C") + 1] == t["workspace"]
         assert cmd[cmd.index("-s") + 1] == "read-only"
         assert "--json" in cmd and "--skip-git-repo-check" in cmd
+        assert "--ephemeral" in cmd  # 票 11 E2E：一次性任务不写全局线程存储
         assert spawn.last_proc.stdin.data.decode("utf-8") == "只回复一个词：OK"
         assert any(e["kind"] == "shell" for e in t["runs"][0]["side_effects"])
 
@@ -162,6 +163,7 @@ def test_codex_followup_resumes_thread_without_c_s():
         cmd2 = spawn.calls[1]["cmd"]
         assert cmd2[1] == "exec" and cmd2[2] == "resume" and cmd2[3] == "01TESTTHREAD"
         assert "-C" not in cmd2 and "-s" not in cmd2
+        assert "--ephemeral" not in cmd2  # resume 需读持久化线程，不带 ephemeral
         assert spawn.last_proc.stdin.data.decode("utf-8") == "第二步"
 
 
@@ -392,3 +394,40 @@ async def test_codex_crash_path_kills_process_tree():
     with pytest.raises(RuntimeError):
         await adapter.execute(task, run, None, RunHooks(task, run, _Dispatcher()))
     assert proc.killed is True
+
+
+# ---------------------------------------------------------------------------
+# TICKET_11B: 新任务 --ephemeral 避全局 thread-store writer 冲突（resume 不带）
+# ---------------------------------------------------------------------------
+
+async def test_codex_new_task_ephemeral_resume_persisted():
+    """一次性后台任务（无 thread）带 --ephemeral：不写 ~/.codex 全局线程存储，不再与
+    用户自己的 codex 会话/惑这冲突（thread-store conflict: active writer）；
+    resume 路径必须读已持久化线程，不带 --ephemeral。"""
+    from app.adapters.base import RunHooks
+
+    spawn = FakeSpawn(events=_codex_events())
+    adapter = CodexAdapter(cli="codex", spawn=spawn)
+    ws = os.path.join("tests", "tmp_workspace", "ws_eph_codex")
+    os.makedirs(ws, exist_ok=True)
+
+    class _Dispatcher:
+        async def thread_bound(self, task_id, thread_id):
+            pass
+
+        async def record_side_effect(self, run_id, kind, detail, path=None):
+            pass
+
+    hooks = RunHooks({"task_id": "Teph", "workspace": ws},
+                     {"run_id": "Reph"}, _Dispatcher())
+    task = {"task_id": "Teph", "workspace": ws, "instruction": "x",
+            "engine_thread_id": None, "writes_authorized": False}
+    run = {"run_id": "Reph"}
+    await adapter.execute(task, run, None, hooks)
+    task2 = dict(task)
+    task2["engine_thread_id"] = "01TESTTHREAD"
+    await adapter.execute(task2, run, "01TESTTHREAD", hooks)
+    new_cmd = spawn.calls[0]["cmd"]
+    resume_cmd = spawn.calls[1]["cmd"]
+    assert "--ephemeral" in new_cmd
+    assert "--ephemeral" not in resume_cmd
