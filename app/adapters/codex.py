@@ -52,6 +52,10 @@ class CodexAdapter(EngineAdapter):
         ws = task.get("workspace")
         if not ws or not os.path.isdir(ws):
             raise EngineError(f"workspace 缺席或不是目录：{ws!r}")
+            # -C must be an absolute path: the child cwd is the task workspace itself, and a
+            # relative -C would be re-resolved against that cwd (workspace\<id>\workspace\<id>)
+            # and codex would fail with "The system cannot find the specified path" (os error 3).
+        ws = os.path.abspath(ws)
         cmd = self._build_cmd(thread, ws, task, run)
         prompt = task.get("instruction") or ""
         if resume_note:

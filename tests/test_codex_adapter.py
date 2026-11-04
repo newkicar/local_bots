@@ -256,3 +256,36 @@ def test_codex_real_cli_smoke_when_available():
         assert t["status"] == "reported", t["status"]
         assert "OK" in (t["result"] or "")
         assert t["engine_thread_id"]
+
+# ---------------------------------------------------------------------------
+# REGRESSION_REL_WS_ABS: relative workspace -> absolute -C (codex os error 3 fix)
+# ---------------------------------------------------------------------------
+
+async def test_relative_workspace_yields_absolute_dash_c():
+    """Relative task workspace must reach codex as an absolute -C: the child
+    cwd is the workspace itself, so a relative -C would be re-resolved
+    against that cwd and codex would fail with os error 3."""
+    from app.adapters.base import RunHooks
+
+    spawn = FakeSpawn(events=_codex_events())
+    adapter = CodexAdapter(cli="codex", spawn=spawn)
+    ws_rel = os.path.join("tests", "tmp_workspace", "rel_ws_codex")
+    os.makedirs(ws_rel, exist_ok=True)
+
+    class _Dispatcher:
+        async def thread_bound(self, task_id, thread_id):
+            pass
+
+        async def record_side_effect(self, run_id, kind, detail, path=None):
+            pass
+
+    task = {"task_id": "Trel", "workspace": ws_rel, "instruction": "hi",
+            "engine_thread_id": None, "writes_authorized": False}
+    run = {"run_id": "R1"}
+    result = await adapter.execute(task, run, None, RunHooks(task, run, _Dispatcher()))
+    assert result == "done codex"
+    cmd = spawn.calls[0]["cmd"]
+    expected_c = os.path.abspath(ws_rel)
+    assert cmd[cmd.index("-C") + 1] == expected_c
+    assert os.path.isabs(cmd[cmd.index("-C") + 1])
+    assert spawn.calls[0]["cwd"] == expected_c
