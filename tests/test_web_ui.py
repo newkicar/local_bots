@@ -240,3 +240,13 @@ def test_frontend_chat_notices_and_markdown_markers():
         assert css.status_code == 200
         for marker in (".task-notice", "pre.md-pre", ".status.ok"):
             assert marker in css.text, marker
+
+
+def test_frontend_selfheal_polling_markers():
+    """票 07 回归：断线自愈兜底——SSE 重连补齐 / 周期轮询 / 亮屏唤醒；静态 marker 守门。"""
+    with TestClient(create_app(_settings("web07poll"))) as c:
+        js = c.get("/app.js")
+        assert js.status_code == 200
+        for marker in ("startPolling", "catchUp", "POLL_MS", "visibilitychange",
+                       'window.addEventListener("focus"'):
+            assert marker in js.text, marker

@@ -110,6 +110,7 @@ async function tryLogin(token) {
   hideLogin();
   connectSSE();
   refreshAll();
+  startPolling();
 }
 
 H("login-form").addEventListener("submit", (e) => {
@@ -128,7 +129,7 @@ H("btn-logout").addEventListener("click", () => {
 function connectSSE() {
   if (state.es) state.es.close();
   const es = new EventSource("/api/events?token=" + encodeURIComponent(state.token));
-  es.onopen = () => setConn(true);
+  es.onopen = () => { setConn(true); catchUp(); };
   es.onerror = () => setConn(false); // 浏览器自动重连
   es.onmessage = (e) => {
     let ev;
@@ -147,6 +148,24 @@ function setConn(ok) {
   c.textContent = ok ? "● 在线（SSE）" : "● 离线";
   c.classList.toggle("ok", ok);
   c.classList.toggle("bad", !ok);
+}
+
+/* ---------- 断线自愈兜底（票 07）：SSE 仅推送；手机锁屏/切后台时 EventSource 会静默断开，
+     之后任务列表/审批/角标全停更。三重兜底：
+     ① SSE 重连即补齐错过状态（onopen 里的 catchUp）；
+     ② 周期轮询兜底 —— 即便 SSE 全断，POLL_MS 内必补齐；
+     ③ 页面前台返回 / 亮屏唤醒时立即补齐。 ---------- */
+const POLL_MS = 10000;
+let pollTimer = null;
+function catchUp() { refreshAll(); }
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => {
+    refreshBadges();
+    if (state.panel === "tasks" || state.panel === "results" || state.panel === "approvals") refreshCurrent();
+  }, POLL_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) catchUp(); });
+  window.addEventListener("focus", catchUp);
 }
 /* ---------- 聊天面板任务通知卡（SSE notification，票 10）：终态/挂起主动反馈，按 notification_id 去重 ---------- */
 const NOTICE_KINDS = {
