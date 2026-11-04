@@ -83,6 +83,8 @@ function Run-NamedTunnel {
     Write-Host "[!] 无凭据，命名隧道无法启动。先执行：powershell -File scripts\cloudflare_tunnel.ps1 setup" -ForegroundColor Red
     exit 1
   }
+  Write-Host "提醒：正式常驻前请确认 Zero Trust Access 策略（指定身份 + MFA）已生效；" -ForegroundColor Yellow
+  Write-Host "      在此之前链路仅有后端 API Token 一道门（Access 未放行则任何人可匿名到达 8000）。" -ForegroundColor Yellow
   Write-Host "启动命名隧道 $TunnelName -> $Backend（Ctrl+C 停止；本机不新增入站端口）"
   & $Cf --no-autoupdate --config $Cfg "tunnel" "run" $TunnelName
 }
