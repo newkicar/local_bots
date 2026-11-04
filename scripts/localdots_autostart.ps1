@@ -16,6 +16,9 @@
     - 不打包、非 Docker；登录自启只是"启动 uvicorn"这一步；
     - 自启以当前用户运行，不落密码、不动系统级配置。
 
+.PARAMETER Python
+  可选：指定启动服务用的 Python 可执行路径；缺省读 $env:LD_PYTHON，再缺省用 PATH 上的 python。
+
 .PARAMETER Action
   register : 写入每用户 Startup 目录自启入口（幂等覆盖；含 8000 已占用则跳过的守护）
   remove   : 清理自启入口
@@ -30,10 +33,19 @@
 param(
   [Parameter(Position = 0)][ValidateSet("register", "remove", "status")]
   [string]$Action = "status"
+  [string]$Python = ""
 )
 
 $ErrorActionPreference = "Stop"
-$Python  = "D:\python_env\python.exe"
+$Python = if (-not $Python) {
+  if ($env:LD_PYTHON) {
+    $env:LD_PYTHON
+  }
+  else {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd) { $cmd.Source } else { "python" }
+  }
+}
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Port    = 8000
 $LauncherDir = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -Name Startup).Startup

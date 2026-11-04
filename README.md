@@ -16,24 +16,26 @@
 
 ## 2. 一次性安装（只做一次）
 
-## ① 安装本项目（需 Python 3.12，在你的环境里）
+## ① 安装本项目（需 Python 3.12+，终端里 `python` 命令可用）
 
 ```powershell
-cd D:\Python Project\local_dots
-& "D:\python_env\python.exe" -m pip install -e .
+cd <local_dots 仓库所在目录>
+pip install -e .
 ```
 
 ## ② 安装 Jarvis 依赖（codex 引擎不需要这一步）
 
 ```powershell
-& "D:\python_env\python.exe" -m pip install -e "D:\Python Project\truly-jarvis-main"
+pip install "https://github.com/newkicar/truly-jarvis/archive/refs/heads/main.zip"
 ```
+（Jarvis 是独立仓库 `newkicar/truly-jarvis`，直接从 GitHub 安装，无需自行 clone；前提是该仓库为公开仓库。）
 
 ## ③ 创建配置文件
 
 把 `.env.example` 复制为 `.env` （同目录），用任何编辑器打开：
 - **必改**：`LD_API_TOKEN` — 访问网页/接口的“密码”，换成一个够长的随机字符串；
-- 其他项保持默认即可（并发上限、审批超时、目录等）。
+- 秘书模型三行（`LD_SECRETARY_MODEL` / `LD_SECRETARY_BASE_URL` / `LD_SECRETARY_API_KEY`）改成你自己模型网关的值；
+- 其他项保持默认即可（并发上限、审批超时等），`LD_SECRETARY_AUTHORIZED_DIRS` 按你本机实际放文件的目录调整。
 
 ## ④ 检查两个“引擎”是否就位
 
@@ -41,8 +43,8 @@ cd D:\Python Project\local_dots
 ```
 codex --version
 ```
-- 输出版本号 → codex 就位（它还需模型网关 mimo2codex 在 127.0.0.1:8788 正在运行）；
-- jarvis 需要它的模型服务可达（vLLM @ 10.214.131.188:8000，公司局域网）；它不可达时 jarvis 任务会失败，检查一下那台机器开机且局域网通畅即可。
+- 输出版本号 → codex 就位（此外还要跑着一个可给它用的 OpenAI 兼容模型网关；作者机器上是 mimo2codex @ 127.0.0.1:8788）；
+- jarvis 需要它的模型服务（vLLM 或你自建的 OpenAI 兼容端点）可达；不可达时 jarvis 任务会失败，检查跑模型的那台机器开机且网络通畅即可（或暂时改用 codex 引擎）。
 
 一次性安装完了。
 
@@ -51,8 +53,8 @@ codex --version
 ### 方式 A：手动启动（一次开一个终端窗口）
 
 ```powershell
-cd D:\Python Project\local_dots
-& "D:\python_env\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd <local_dots 仓库所在目录>
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 看到 `Uvicorn running on http://127.0.0.1:8000` 就是启动好了。这个窗口不能关；关了就是停服务。
 
@@ -65,6 +67,10 @@ powershell -File scripts\localdots_autostart.ps1 register
 ```powershell
 powershell -File scripts\localdots_autostart.ps1 status   # 看自启及服务是否在跑
 powershell -File scripts\localdots_autostart.ps1 remove   # 移除自启功能
+```
+注意：自启脚本找 Python 的顺序是 脚本 `-Python` 参数 > `LD_PYTHON` 环境变量 > PATH 上的 `python`。如果你电脑上直接敲 `python` 能进 Python，无需任何配置；否则注册时显式传参：
+```powershell
+powershell -File scripts\localdots_autostart.ps1 register -Python "C:\你的路径\python.exe"
 ```
 
 检测服务是否在跑（任何终端）：
@@ -103,7 +109,7 @@ queued → running → reported（成功）/ failed（失败）/ cancelled（你
 1. **网页说“连接失败”** → 服务没在跑：看第 3 节把服务起好，或 `status` 命令看 8000 是否被占用。
 2. **输入了 Token 但说“Token 失效”（401）** → 你输入的和 `.env` 里的 `LD_API_TOKEN` 不一样，重新复制。
 3. **codex 任务报“系统找不到路径 / os error 3”** → 已修复的路径 bug：保持 `18e97f4` 以后的代码，重启服务即可；或检查本机 codex CLI 是否存在。
-4. **jarvis 任务失败（超时/连不上模型）** → vLLM 模型服务（10.214.131.188:8000）不可达：检查那台机器开机且局域网通畅，或暂时改用 codex 引擎。
+4. **jarvis 任务失败（超时/连不上模型）** → jarvis 指向的模型服务不可达：检查跑模型的那台机器开机且网络通畅，或暂时改用 codex 引擎。
 5. **登录出现黑色 cmd 窗口** → 自启的已知小限制，服务正常运行就可以留着，不想看就直接关窗（服务会随窗关掉，下次登录会重新起）。
 
 ## 7. 手机远程使用（Cloudflare 隧道，IT 已批准 2026-11-04）
