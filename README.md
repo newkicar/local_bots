@@ -106,9 +106,48 @@ queued → running → reported（成功）/ failed（失败）/ cancelled（你
 4. **jarvis 任务失败（超时/连不上模型）** → vLLM 模型服务（10.214.131.188:8000）不可达：检查那台机器开机且局域网通畅，或暂时改用 codex 引擎。
 5. **登录出现黑色 cmd 窗口** → 自启的已知小限制，服务正常运行就可以留着，不想看就直接关窗（服务会随窗关掉，下次登录会重新起）。
 
-## 7. 安全须知（了解即可）
+## 7. 手机远程使用（Cloudflare 隧道，IT 已批准 2026-11-04）
 
-- 服务**只监听 127.0.0.1:8000**，外网打不进来；Token 泄了也只在本机可用。想让其他设备访问？必须经公司 IT 授权（Cloudflare 隧道，本版已将公网通道列为后置阶段，须先获公司 IT 授权；现在别动）。
+背景：服务只监听本机回环（`127.0.0.1:8000`），公网打不进来。想用手机操作，就走
+Cloudflare 隧道：手机 → Cloudflare 网络 → 本机的 `127.0.0.1:8000`。**本机不开任何新端口**，
+正式使用只有被 Access 放行的人能进。
+
+两步走：
+
+**第 1 步（临时/验证连通）：一次性链接 quick**
+
+```powershell
+powershell -File scripts\cloudflare_tunnel.ps1 quick
+```
+
+窗口里会出现一个 `https://xxxx.trycloudflare.com` 链接：手机浏览器打开它，
+在网页输入框填入 `.env` 里的 Token，就能用了。**注意：这个链接没有身份核验、
+谁拿到谁都能访问，且你一停命令（Ctrl+C / 关窗）就失效——只用于开发验证，用完即停。**
+
+**第 2 步（正式使用）：命名隧道 + Access 身份核验（MFA）**
+
+```powershell
+powershell -File scripts\cloudflare_tunnel.ps1 setup
+```
+
+`setup` 会打印：一次性三步命令（`login` / `create` / `route dns`，按提示做）+
+Cloudflare Zero Trust 控制台的 Access 配置步骤（放行指定身份、强制 MFA）。
+配好后前台运行隧道：
+
+```powershell
+powershell -File scripts\cloudflare_tunnel.ps1 run
+```
+
+手机访问 `https://<host>.<你的域名>`；不在放行名单或没做 MFA 的人进不来，
+进来了后端还照旧校验 Token（双保险）。想开机常驻就 `register`
+（默认不注册，保留与否你决定）。
+
+随时体检：`powershell -File scripts\cloudflare_tunnel.ps1 status`（只读，无副作用）。
+
+## 8. 安全须知（了解即可）
+
+- 服务**只监听 127.0.0.1:8000**，外网打不进来；Token 泄了也只在本机可用。
+  远程访问走第 7 节的 Cloudflare 通道（公司 IT 已批准 2026-11-04，口头、书面归档待补）；
+  **Access 策略（指定身份 + MFA）启用之前，quick 链接不得用于正式工作**。
 - **不要手动改 `~/.codex/config.toml`**：codex 的配置由 CLI 自己管，我们只是它的“调用方”。
 - 任务默认沙箱是 **只读**，只有你勾选“授权修改”或在审批环节批准后才会写文件；审批可以忽略，但它是最后一道保险，别疏忽了。
-

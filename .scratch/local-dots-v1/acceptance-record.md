@@ -81,3 +81,7 @@ python -c "import runpy, sys; sys.argv=['tests/acceptance08.py']; runpy.run_path
 ```
 
 （跑前确认 18900/8000 无残留监听；跑后确认 18900 无孤儿进程。临时数据全部在 `tests/tmp_workspace/`，gitignored。）
+
+---
+补记（2026-11-04）：票 09（Cloudflare 公网通道）已按 IT 口头批准（部门经理 + IT，2026-11-04；书面归档待补）实施。
+落地物与冒烟证据见 `docs/cloudflare-blueprint.md` §2/§3；服务仍仅监听 127.0.0.1:8000，8788 仍仅回环。
