@@ -9,7 +9,9 @@
 - 引擎永不改变进程全局目录；workspace 显式传给工厂（任务级
   workspace），Jarvis 文件后端 / shell 工具据此继承。
 - HITL：ainvoke 返回 __interrupt__ → 映射 RunSuspended（jarvis_interrupt），
-  审批放行后 ainvoke(None, config) 从断点续行。
+  审批放行后以 ainvoke(Command(resume={"decisions": [...]}), config) 从断点续行
+  （HITL 挂起中断只能凭 resume 决策放行；普通 None 输入仅原样重新挂起，
+  会导致批准后反复触发 approval_requested）。
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from typing import Any, Awaitable, Callable
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.types import Command
 
 from app.adapters.base import EngineAdapter, EngineError, RunHooks, RunSuspended
 
@@ -82,7 +85,9 @@ class JarvisAdapter(EngineAdapter):
             agent = await self._agent_factory(ws, saver)
             config = {"configurable": {"thread_id": thread or task["task_id"]}}
             if await self._has_pending_interrupt(saver, config):
-                payload: Any = None  # 审批放行后续行：从断点恢复，不再重发指令
+                # 审批放行后的断点续行：HITL 挂起中断必须携带 resume 决策放行；
+                # None 输入不会放行，仅原样重新挂起（审批循环）。
+                payload: Any = await self._resume_payload(saver, config, run.get("decision"))
             else:
                 payload = {"messages": [{"role": "user", "content": text}]}
             state = await agent.ainvoke(payload, config)
@@ -120,6 +125,33 @@ class JarvisAdapter(EngineAdapter):
         return any(
             w[1] == "__interrupt__" for w in (getattr(tup, "pending_writes", None) or [])
         )
+
+    async def _resume_payload(
+        self, checkpointer: AsyncSqliteSaver, config: dict[str, Any], decision: str | None
+    ) -> Any:
+        """构造 HITL 挂起中断的恢复输入（Command(resume=...)）。
+
+        LangGraph HITL 协议：每个挂起的工具调用需要一条决策
+        （{"decisions": [{"type": "approve"}, ...]}），决策条数取自检查点
+        中 pending 中断值的 action_requests。仅当 run 已明确批准
+        （decision='approved'，ApprovalGate.approve 写入）才放行；
+        未批准的防御路径返回 None —— 引擎将原样重新挂起并再次请求审批
+        （保守：绝不无批准自动放行）。
+        """
+        if decision != "approved":
+            return None
+        tup = await checkpointer.aget_tuple(config)
+        writes = (getattr(tup, "pending_writes", None) or []) if tup is not None else []
+        n_actions = 0
+        for w in writes:
+            if len(w) < 3 or w[1] != "__interrupt__":
+                continue
+            items = w[2] if isinstance(w[2], (list, tuple)) else [w[2]]
+            for item in items:
+                value = getattr(item, "value", item) or {}
+                if isinstance(value, dict):
+                    n_actions += len(value.get("action_requests") or [])
+        return Command(resume={"decisions": [{"type": "approve"}] * max(1, n_actions)})
 
     async def reconcile_running(
         self, task: dict[str, Any], run: dict[str, Any], thread: str | None

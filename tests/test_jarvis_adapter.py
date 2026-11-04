@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
+from langgraph.types import Command
 
 from app.adapters.jarvis import JarvisAdapter
 from app.main import create_app
@@ -72,7 +73,7 @@ class FakeJarvisAgent:
         }
 
 
-def _make_factory(agent: FakeJarvisAgent) -> tuple:
+def _make_factory(agent: Any) -> tuple:
     calls: list[tuple[str, str]] = []
 
     async def factory(ws: str, ckpt: Any) -> FakeJarvisAgent:
@@ -113,14 +114,14 @@ def test_lifecycle_default_engine_thread_binding_and_followup():
         assert t3["result"].startswith("followup done:")
 
 
-# ---------- HITL 中断映射审批门禁：挂起 → 审批放行 → ainvoke(None) 续行 ----------
+# ---------- HITL 中断映射审批门禁：挂起 → 审批放行 → Command(resume=decisions) 续行 ----------
 def test_hitl_interrupt_maps_to_approval_gate():
     agent = FakeJarvisAgent(interrupt=True)
     factory, _calls = _make_factory(agent)
     settings = _settings("jarvis-hitl", ld_max_concurrent_runs=1)
     adapter = JarvisAdapter(settings.checkpoints_db_path, agent_factory=factory)
 
-    async def _always_pending(_checkpointer: Any, _config: dict[str, Any]) -> bool:
+    async def _always_pending(checkpointer: Any, config: dict[str, Any]) -> bool:
         return True
 
     adapter._has_pending_interrupt = _always_pending  # 实例级接缝：模拟停在 HITL 审批点
@@ -135,14 +136,68 @@ def test_hitl_interrupt_maps_to_approval_gate():
         assert row["kind"] == "jarvis_interrupt"
         assert row["wait_reason"] == "jarvis_interrupt"
         assert row["path"], "挂起操作携带 workspace 路径"
-        # 审批放行 → 恢复执行：resume 路径以 payload=None 调用 ainvoke（断点续行）
+        # 审批放行 → 恢复执行：HITL 协议要求 Command(resume={"decisions": [...]}) 续行
         r = c.post(f"/api/approvals/{rid}/approve", headers=_headers())
         assert r.status_code == 200, r.text
         t2 = _wait_terminal(c, tid, want=("reported",))
-        assert agent.seen[1][0] is None, "审批恢复必须以 ainvoke(None, config) 续行"
+        resume_payload = agent.seen[1][0]
+        assert isinstance(resume_payload, Command), "审批恢复必须携带 HITL resume 决策（Command）"
+        assert resume_payload.resume == {"decisions": [{"type": "approve"}]}
         assert agent.seen[1][1]["configurable"]["thread_id"] == tid
         assert t2["result"] == "after-approval"
         assert t2["engine_thread_id"] == tid
+
+
+# ---------- 回归：HITL 挂起线程对 None 输入不放行（仅重新挂起），批准必须以决策 resume ----------
+class FakeHitlProtocolAgent:
+    """模拟 LangGraph HITL 语义：放行挂起中断必须凭 Command(resume=decisions)；
+    None 输入不消费中断，原样再次返回 __interrupt__（旧实现的审批循环根因）。"""
+
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+        self._pending = False
+
+    async def ainvoke(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
+        self.seen.append(payload)
+        if isinstance(payload, Command) and payload.resume:
+            self._pending = False
+            return {"messages": [{"role": "ai", "content": "after-approval"}]}
+        if not self._pending:
+            self._pending = True
+        return {
+            "messages": [],
+            "__interrupt__": [
+                SimpleNamespace(
+                    value={"action_requests": [{"name": "write_file", "args": {}}]}
+                )
+            ],
+        }
+
+
+def test_resume_none_input_does_not_release_hitl_interrupt():
+    """旧实现 ainvoke(None, config)：挂起线程不放行 → 每次批准后重新挂起，
+    approval_requested 反复触发。修后批准路径携带决策，一次放行到底。"""
+    agent = FakeHitlProtocolAgent()
+    factory, _calls = _make_factory(agent)
+    settings = _settings("jarvis-hitl-protocol", ld_max_concurrent_runs=1)
+    adapter = JarvisAdapter(settings.checkpoints_db_path, agent_factory=factory)
+
+    async def _always_pending(checkpointer: Any, config: dict[str, Any]) -> bool:
+        return True
+
+    adapter._has_pending_interrupt = _always_pending  # 接缝：模拟线程停在 HITL 审批点
+    with TestClient(create_app(settings, {"jarvis": adapter})) as c:
+        t = _submit(c, instruction="敏感操作（需审批）", engine=None)
+        tid = t["task_id"]
+        rid = t["runs"][0]["run_id"]
+        _wait_status(c, tid, ("waiting-approval",))
+        r = c.post(f"/api/approvals/{rid}/approve", headers=_headers())
+        assert r.status_code == 200, r.text
+        t2 = _wait_terminal(c, tid, want=("reported",))
+        assert t2["result"] == "after-approval"
+        # 仅两次 ainvoke：首次中断 + 批准 resume；无第三次（旧实现会无限循环）
+        assert len(agent.seen) == 2, f"不应出现重新挂起循环: {agent.seen}"
+        assert isinstance(agent.seen[1], Command), "恢复输入必须为 HITL resume 决策"
 
 
 # ---------- 重启核对：无检查点 / HITL 挂起 / 未完成超步 / 干净可恢复 ----------
