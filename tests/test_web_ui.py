@@ -250,3 +250,19 @@ def test_frontend_selfheal_polling_markers():
         for marker in ("startPolling", "catchUp", "POLL_MS", "visibilitychange",
                        'window.addEventListener("focus"'):
             assert marker in js.text, marker
+
+
+def test_frontend_auto_approval_mode_markers():
+    """票 03 延伸：审批面板代审模式切换 UI（manual/auto_safe/yolo）+ 结果反馈；静态 marker 守门。"""
+    with TestClient(create_app(_settings("web03auto"))) as c:
+        html = c.get("/").text
+        for marker in ('id="auto-mode-row"', 'data-mode="yolo"', 'id="auto-mode-note"'):
+            assert marker in html, marker
+        js = c.get("/app.js")
+        assert js.status_code == 200
+        for marker in ("refreshAutoMode", "auto-mode-btn", "/api/approval-mode"):
+            assert marker in js.text, marker
+        css = c.get("/style.css")
+        assert css.status_code == 200
+        for marker in (".auto-mode", ".auto-mode-note"):
+            assert marker in css.text, marker

@@ -36,6 +36,13 @@
     <div class="panel-actions">
       <button id="btn-refresh-approvals" class="ghost" type="button">刷新</button>
     </div>
+    <div class="auto-mode" id="auto-mode-row">
+      <span class="auto-mode-label">代审模式</span>
+      <button class="ghost auto-mode-btn" data-mode="manual" type="button">手动</button>
+      <button class="ghost auto-mode-btn" data-mode="auto_safe" type="button">有限代审</button>
+      <button class="warn auto-mode-btn" data-mode="yolo" type="button">YOLO 全放行</button>
+    </div>
+    <div class="auto-mode-note" id="auto-mode-note"></div>
     <div id="approval-list"></div>
   </section>
 

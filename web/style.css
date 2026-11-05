@@ -176,3 +176,10 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
 .md pre.md-pre { background: #0b0e12; border: 1px solid var(--border); border-radius: 8px; padding: 8px; overflow-x: auto; }
 .md pre.md-pre code { border: 0; padding: 0; background: transparent; }
 .md a { color: var(--accent); }
+
+/* 代审模式切换（审批面板） */
+.auto-mode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; }
+.auto-mode-label { font-size: 13px; color: var(--muted); }
+.auto-mode-btn { font-size: 13px; }
+.auto-mode-btn.active { color: var(--text); border-color: var(--accent); background: #12364a; }
+.auto-mode-note { font-size: 13px; min-height: 18px; color: var(--muted); }

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.task_manager import InvalidTransition, TaskManager, _now
 
 if TYPE_CHECKING:
+    from app.auto_approve import AutoApprover
     from app.dispatcher import Dispatcher
     from app.permissions import Blacklist
 
@@ -29,6 +30,8 @@ class ApprovalGate:
 
     approve/reject/list_pending 供 main.py 路由调用；sweep_interval 为公开属性
     （测试接缝：客户端内可改小以加速超时路径，sweeper 每轮重读）。
+    代审（注入 auto_approver 且非 manual 时）：sweep 先按当前模式自动放行，
+    再执行超时拒绝；自动放行与手动批准同走 approve() 路径。
     """
 
     def __init__(
@@ -40,6 +43,7 @@ class ApprovalGate:
         timeout_min: float = 30.0,
         sweep_interval: float = 15.0,
         clock: Callable[[], str] | None = None,
+        auto_approver: "AutoApprover | None" = None,
     ) -> None:
         self._tm = tm
         self._dispatcher = dispatcher
@@ -48,6 +52,7 @@ class ApprovalGate:
         self.sweep_interval = float(sweep_interval)
         # 可注入时钟（ISO-8601 UTC 字符串，与 task_manager._now 一致）
         self._clock = clock or _now
+        self._auto = auto_approver
         self._sweeper: asyncio.Task | None = None
 
     # ---------- 生命周期 ----------
@@ -103,7 +108,7 @@ class ApprovalGate:
             })
         return out
 
-    async def approve(self, run_id: str) -> dict[str, Any]:
+    async def approve(self, run_id: str, *, via: str = "manual") -> dict[str, Any]:
         """放行：批准路径落库 + 决策写库（resume 前，_drive 重读新鲜行），再恢复执行。"""
         run = await self._tm.get_run(run_id)
         if run is None:
@@ -117,9 +122,11 @@ class ApprovalGate:
         )
         if not await self._tm.decide_run(run_id, "approved"):
             raise InvalidTransition(f"Run {run_id} 已不处于 waiting-approval（并发决策胜出）")
-        await self._dispatcher.resume_run(
-            run_id, f"[审批] 已放行 {op_path}（来源: {run.get('wait_reason')}）"
-        )
+        if via.startswith("auto:"):
+            note = f"[代审] 已自动放行 {op_path}（{via}，来源: {run.get('wait_reason')}）"
+        else:
+            note = f"[审批] 已放行 {op_path}（来源: {run.get('wait_reason')}）"
+        await self._dispatcher.resume_run(run_id, note)
         return {
             "run_id": run_id,
             "status": "resumed",
@@ -151,7 +158,21 @@ class ApprovalGate:
 
     # ---------- 超时清扫 ----------
     async def sweep_once(self) -> list[str]:
-        """拒绝所有已超过 timeout_min 的 waiting-approval Run；返回已拒绝的 run_id 列表。"""
+        """代审（注入 auto_approver 且非 manual 时）先自动放行，再拒绝已超时 Run。
+
+        返回已拒绝的 run_id 列表（自动放行的 Run 不在其中）；超时循环重查
+        waiting_runs，已放行 Run 自然排除。
+        """
+        # 代审 pass：按当前模式自动放行（超时循环之前；手动决策已胜出则跳过）
+        if self._auto is not None:
+            mode = self._auto.current_mode()
+            if mode != "manual":
+                for run in await self._tm.waiting_runs():
+                    if self._auto.should_auto_approve(run, mode):
+                        try:
+                            await self.approve(run["run_id"], via=f"auto:{mode}")
+                        except (KeyError, InvalidTransition):
+                            continue  # 手动决策已胜出
         now = datetime.fromisoformat(self._clock())
         rejected: list[str] = []
         for run in await self._tm.waiting_runs():

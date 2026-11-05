@@ -98,6 +98,7 @@ class JarvisAdapter(EngineAdapter):
                         "kind": "jarvis_interrupt",
                         "path": ws,
                         "detail": str(interrupts[0].value)[:300],
+                        "actions": self._interrupt_actions(interrupts[0].value),
                     },
                     "jarvis_interrupt",
                 )
@@ -152,6 +153,37 @@ class JarvisAdapter(EngineAdapter):
                 if isinstance(value, dict):
                     n_actions += len(value.get("action_requests") or [])
         return Command(resume={"decisions": [{"type": "approve"}] * max(1, n_actions)})
+
+    @staticmethod
+    def _interrupt_actions(value: Any, *, cap: int = 20, arg_cap: int = 150) -> list[dict[str, str]]:
+        """从 HITL 中断值提取结构化动作 [{"tool", "arg"}]，供代审规则判断只读性。
+
+        容忍任意脏数据：非 dict 值（如旧数据的纯字符串）→ []；非 dict 元素、
+        无 name / name 非 str 的元素跳过；args 非 dict 按空；arg 取值顺序
+        command → file_path → path → pattern → ""。最多 cap 条，arg 截断 arg_cap。
+        """
+        if not isinstance(value, dict):
+            return []
+        requests = value.get("action_requests")
+        if not isinstance(requests, (list, tuple)):
+            return []
+        out: list[dict[str, str]] = []
+        for item in list(requests)[:cap]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            args = item.get("args")
+            args = args if isinstance(args, dict) else {}
+            arg = ""
+            for key in ("command", "file_path", "path", "pattern"):
+                v = args.get(key)
+                if v is not None:
+                    arg = str(v)
+                    break
+            out.append({"tool": name, "arg": arg[:arg_cap]})
+        return out
 
     async def reconcile_running(
         self, task: dict[str, Any], run: dict[str, Any], thread: str | None

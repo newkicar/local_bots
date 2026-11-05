@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,6 +23,10 @@ class Settings(BaseSettings):
 
     # 审批超时（ADR-0005，分钟；计时自进入 waiting-approval 起算）
     ld_approval_timeout_min: float = 30.0
+
+    # 代审模式：manual 手动（缺省）/ auto_safe 有限代审（只读命令自动放行）/ yolo 全放行
+    # 运行期可经 /api/approval-mode 切换（本启动周期内生效，重启回落此配置）
+    ld_approval_mode: Literal["manual", "auto_safe", "yolo"] = "manual"
 
     # 目录与数据
     ld_data_dir: Path = Path("data")

@@ -239,3 +239,77 @@ def test_reconcile_from_tuple_branches():
     assert v4["safe"] is True and v4["result"] is None
     # 无检查点 → 不安全（转等待核实）
     assert adapter._reconcile_from_tuple(None)["safe"] is False
+
+
+# ---------- 代审：结构化动作写入 pending_op（只读命令判定依赖此数据） ----------
+class FakeJarvisAgentWithActions:
+    """首次 ainvoke 返回结构化 HITL 中断（execute + write_file + 脏条目）。"""
+
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+
+    async def ainvoke(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
+        self.seen.append((payload, config))
+        if len(self.seen) == 1:
+            return {
+                "messages": [],
+                "__interrupt__": [
+                    SimpleNamespace(
+                        value={
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "git status"}},
+                                {"name": "write_file",
+                                 "args": {"file_path": r"C:\x.txt", "content": "..."}},
+                                {"args": {"command": "no-name-skip"}},
+                                {"name": 123},
+                            ]
+                        }
+                    )
+                ],
+            }
+        return {"messages": [{"role": "ai", "content": "after-approval"}]}
+
+
+def test_hitl_structured_actions_in_pending_op():
+    """结构化 action_requests → pending_op.actions（{tool, arg} 清洗后）；代审规则据此判只读。"""
+    agent = FakeJarvisAgentWithActions()
+    factory, _calls = _make_factory(agent)
+    settings = _settings("jarvis-hitl-actions", ld_max_concurrent_runs=1)
+    adapter = JarvisAdapter(settings.checkpoints_db_path, agent_factory=factory)
+
+    async def _always_pending(checkpointer: Any, config: dict[str, Any]) -> bool:
+        return True
+
+    adapter._has_pending_interrupt = _always_pending  # 实例级接缝
+    with TestClient(create_app(settings, {"jarvis": adapter})) as c:
+        t = _submit(c, instruction="敏感操作（需审批）", engine=None)
+        tid = t["task_id"]
+        rid = t["runs"][0]["run_id"]
+        _wait_status(c, tid, ("waiting-approval",))
+        approvals = c.get("/api/approvals", headers=_headers()).json()
+        row = next(a for a in approvals if a["run_id"] == rid)
+        assert row["pending_op"]["pending_op"]["actions"] == [
+            {"tool": "execute", "arg": "git status"},
+            {"tool": "write_file", "arg": r"C:\x.txt"},
+        ], "脏条目（无 name / name 非 str）被跳过，arg 取 file_path"
+
+
+def test_hitl_string_interrupt_yields_no_actions():
+    """纯字符串中断（旧数据形态）→ 无结构化动作，代审规则保守交人工。"""
+    agent = FakeJarvisAgent(interrupt=True)
+    factory, _calls = _make_factory(agent)
+    settings = _settings("jarvis-hitl-string", ld_max_concurrent_runs=1)
+    adapter = JarvisAdapter(settings.checkpoints_db_path, agent_factory=factory)
+
+    async def _always_pending(checkpointer: Any, config: dict[str, Any]) -> bool:
+        return True
+
+    adapter._has_pending_interrupt = _always_pending
+    with TestClient(create_app(settings, {"jarvis": adapter})) as c:
+        t = _submit(c, instruction="敏感操作（需审批）", engine=None)
+        tid = t["task_id"]
+        rid = t["runs"][0]["run_id"]
+        _wait_status(c, tid, ("waiting-approval",))
+        approvals = c.get("/api/approvals", headers=_headers()).json()
+        row = next(a for a in approvals if a["run_id"] == rid)
+        assert row["pending_op"]["pending_op"]["actions"] == []

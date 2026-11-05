@@ -3,7 +3,7 @@
 
 const TERMINAL = new Set(["reported", "failed", "rejected", "cancelled"]);
 const ACTIVE = new Set(["queued", "running", "waiting-approval", "interrupted"]);
-const REASON_LABEL = { blacklist: "黑名单拦截", restart_reconciliation: "重启核对" };
+const REASON_LABEL = { blacklist: "黑名单拦截", restart_reconciliation: "重启核对", jarvis_interrupt: "Jarvis HITL 审批点" };
 const H = (id) => document.getElementById(id);
 
 const state = {
@@ -252,7 +252,7 @@ function refreshCurrent() {
   else if (state.panel === "results") refreshResults();
 }
 function refreshAll() {
-  refreshTasks(); refreshApprovals(); refreshResults(); refreshBadges();
+  refreshTasks(); refreshApprovals(); refreshResults(); refreshBadges(); refreshAutoMode();
 }
 
 /* ---------- 聊天面板 ---------- */
@@ -447,6 +447,7 @@ function approvalCard(a) {
     (a.instruction ? '<div class="kv"><b>指令</b> ' + esc(a.instruction) + "</div>" : "") +
     (a.workspace ? '<div class="kv"><b>工作区</b> ' + esc(a.workspace) + "</div>" : "") +
     (a.approved_paths && a.approved_paths.length ? '<div class="kv"><b>已放行路径</b> ' + esc(a.approved_paths.join(", ")) + "</div>" : "") +
+    (po.actions && po.actions.length ? '<div class="kv"><b>动作</b> ' + esc(po.actions.map((x) => x.tool + " " + x.arg).join("; ")) + "</div>" : "") +
     (a.side_effects && a.side_effects.length ? '<div class="kv"><b>Side-Effect Ledger（' + a.side_effects.length + " 条）</b></div><pre class='ledger'>" + esc(JSON.stringify(a.side_effects, null, 1)) + "</pre>" : "") +
     '<div class="actions"><button class="primary" data-act="approve">批准</button>' +
     '<input data-reason placeholder="拒绝原因（必填）"><button class="warn" data-act="reject">拒绝</button></div>';
@@ -462,6 +463,29 @@ function approvalCard(a) {
   return card;
 }
 H("btn-refresh-approvals").addEventListener("click", refreshApprovals);
+
+/* ---------- 代审模式（auto_safe / yolo） ---------- */
+async function refreshAutoMode() {
+  let info;
+  try { info = await api("/api/approval-mode"); } catch { return; }
+  for (const b of document.querySelectorAll(".auto-mode-btn")) {
+    b.classList.toggle("active", b.dataset.mode === info.mode);
+  }
+  const note = H("auto-mode-note");
+  if (!note) return;
+  note.textContent =
+    info.mode === "yolo" ? "YOLO：全部审批自动放行（含文件改动/删除），风险自负"
+    : info.mode === "auto_safe" ? "有限代审：仅只读命令（读文件、查状态等）自动放行，文件写/删仍需人工"
+    : "手动：逐条人工审批（代审模式重启后回落 .env 的 LD_APPROVAL_MODE 配置值）";
+}
+for (const b of document.querySelectorAll(".auto-mode-btn")) {
+  b.addEventListener("click", async () => {
+    try {
+      await api("/api/approval-mode", { method: "POST", body: JSON.stringify({ mode: b.dataset.mode }) });
+      refreshAutoMode(); refreshApprovals();
+    } catch (err) { alert("切换代审模式失败：" + err.message); }
+  });
+}
 
 /* ---------- 结果面板 ---------- */
 async function refreshResults() {

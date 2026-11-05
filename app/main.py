@@ -22,6 +22,7 @@ from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
 from app.approval import ApprovalGate
+from app.auto_approve import MODES, AutoApprover
 from app.dispatcher import Dispatcher
 from app.permissions import Blacklist, coarse_task_policy
 from app.reconcile import reconcile_on_startup
@@ -64,6 +65,10 @@ class RejectApproval(BaseModel):
     reason: str
 
 
+class ApprovalModeRequest(BaseModel):
+    mode: str
+
+
 class ChatRequest(BaseModel):
     message: str
     history: list[dict[str, str]] = []
@@ -102,8 +107,13 @@ def create_app(
         max_concurrent=settings.ld_max_concurrent_runs,
         policy=coarse_task_policy(bl),
     )
+    auto = AutoApprover(settings.ld_approval_mode)
     gate = ApprovalGate(
-        tm, dispatcher, bl, timeout_min=settings.ld_approval_timeout_min
+        tm,
+        dispatcher,
+        bl,
+        timeout_min=settings.ld_approval_timeout_min,
+        auto_approver=auto,
     )
     sec = secretary
     if sec is None:
@@ -132,6 +142,7 @@ def create_app(
     app.state.tm = tm
     app.state.dispatcher = dispatcher
     app.state.gate = gate
+    app.state.auto_approver = auto
     app.state.secretary = sec
 
     async def _auth(request: Request) -> None:
@@ -208,6 +219,20 @@ def create_app(
     @app.get("/api/approvals", dependencies=[auth])
     async def list_approvals() -> list[dict[str, Any]]:
         return await gate.list_pending()
+
+    @app.get("/api/approval-mode", dependencies=[auth])
+    async def get_approval_mode() -> dict[str, str | list[str]]:
+        return {"mode": auto.current_mode(), "modes": list(MODES)}
+
+    @app.post("/api/approval-mode", dependencies=[auth])
+    async def set_approval_mode(body: ApprovalModeRequest) -> dict[str, str | list[str]]:
+        try:
+            auto.set_mode(body.mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        m = auto.current_mode()
+        await hub.publish({"kind": "approval_mode_changed", "mode": m})
+        return {"mode": m, "modes": list(MODES)}
 
     @app.post("/api/approvals/{run_id}/approve", dependencies=[auth])
     async def approve_run(run_id: str) -> dict[str, Any]:
