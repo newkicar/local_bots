@@ -20,3 +20,10 @@ workspace/
 cf_quick.log
 cf_quick_url.txt
 cf_autostart.log
+
+# 代理一次性工作文件与运行日志（scratch 里正式 issues/spec md 仍入库）
+.scratch/_*
+.scratch/cert_retry.bin
+scripts/_*
+uvicorn.log
+uvicorn.err.log
