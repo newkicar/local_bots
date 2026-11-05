@@ -93,6 +93,12 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health -Headers @{ Authorization = "
 ```
 返回 `ok` 就行。
 
+**想把隧道也登录自启**（手机远程用，见第 7 节）：把仓库的 `scripts\cloudflare_quick_autostart.bat`
+复制进启动文件夹（`Win+R` → `shell:startup`），改名 `localdots_tunnel_autostart.bat`。
+每次登录即自动起 quick 隧道（免账号免凭据）：URL 写进仓库根 `cf_quick_url.txt`，
+过程记 `cf_autostart.log`；QUIC 被网络拦时脚本自动降级 HTTP/2（TCP/443）重试一次。
+注意 bat 里写死了仓库绝对路径，仓库搬家要先改 bat 再重新复制。
+
 ## 4. 网页怎么用
 
 浏览器打开 **http://127.0.0.1:8000/** → 输入 Token （就是 `.env` 里的 `LD_API_TOKEN` ）→ 进去。页面上就是全部功能：
@@ -143,6 +149,14 @@ powershell -File scripts\cloudflare_tunnel.ps1 quick
 窗口里会出现一个 `https://xxxx.trycloudflare.com` 链接：手机浏览器打开它，
 在网页输入框填入 `.env` 里的 Token，就能用了。**注意：这个链接没有身份核验、
 谁拿到谁都能访问，且你一停命令（Ctrl+C / 关窗）就失效——只用于开发验证，用完即停。**
+
+**第 1 步的免手工版：quick 开机自启（日常推荐）**
+
+按第 3 节注册过 `localdots_tunnel_autostart.bat` 的话，登录后隧道自动起好，不用再手动敲命令：
+
+- 手机用的地址直接读仓库根 `cf_quick_url.txt`；`cf_autostart.log` 记录当天启动过程；
+- QUIC/UDP 被拦的日子脚本自动降级 `--protocol http2`（TCP/443）再试，全程无人值守；
+- 记住：quick 的 URL **每次启动都会换**、旧的立即作废——别存手机书签当长期入口，每次用之前读一次 `cf_quick_url.txt` 即可。
 
 **第 2 步（正式使用）：命名隧道 + Access 身份核验（MFA）**
 

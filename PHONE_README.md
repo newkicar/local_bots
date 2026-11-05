@@ -5,8 +5,10 @@
 >
 > 正式使用前必须先完成"路径 B"的 Access 身份核验 + MFA，在此之前 quick 链接仅限自己临时验证。
 >
-> 当前状态（2026-11-04 实测）：quick 路径已验证可用；命名隧道 `login` 的证书
-> 下载在本机网络不稳（TLS reset/timeout，见 §3.1 故障③），修通前先用 quick 顶着。
+> 当前状态（2026-11-05 实测）：quick 路径已加**开机自启**（§2 第 5 条）：登录后隧道
+> 自动起，URL 写入仓库根 `cf_quick_url.txt`；公司网络拦 QUIC/UDP 的日子脚本自动降级
+> HTTP/2（TCP/443）重试，当天已实测走降级路径、手机 200 全通。命名隧道 `login` 的证书
+> 下载在本机网络仍不稳（TLS reset/timeout，见 §3.1 故障③），修通前用 quick 顶着。
 
 ## 0. 原理（一句话说清）
 
@@ -26,6 +28,11 @@
    或执行 `powershell -File scripts\cloudflare_tunnel.ps1 status` 看到 8000 回环 LISTEN。
 2. **cloudflared 就位**：仓库根目录有 `cloudflared.exe`（二进制不入库，本机自备；
    缺了脚本会直接报红并提示）。
+
+   注册过隧道自启的机器（§2 第 5 条）：服务和隧道都是登录时自动起的
+   （启动文件夹里 `localdots_autostart.bat` + `localdots_tunnel_autostart.bat`）——先看仓库根
+   `cf_quick_url.txt` 是否当天生成、`cf_autostart.log` 末尾是否 OK，缺了才手动补跑
+   `localdots_tunnel_autostart.bat`，不必每次从头做这三条预检。
 
 3. **清掉死代理残留**：本终端若被注入过失效代理（如 AI 代理 exec 会话留下的
    `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY=http://127.0.0.1:9`），cloudflared 直连会挂死。
@@ -51,7 +58,15 @@
 4. **预热期 30–90 秒**：刚打印的 URL 首访可能报 1033 / 一直转圈，属正常
    （Cloudflare 节点还在拉齐路由），等 1 分钟再试即可。
 
-5. **后台长期挂着（可选）**：不想占一个终端时，分离进程启动：
+5. **长期挂着（推荐：开机自启）**：把仓库的 `scripts\cloudflare_quick_autostart.bat` 复制进
+   启动文件夹（`Win+R` → `shell:startup`），改名 `localdots_tunnel_autostart.bat`。
+   之后每次登录自动完成：杀掉卡死的旧 cloudflared → 清旧日志 → 隐藏方式全新启动 →
+   30s 内拿不到 URL 自动降级 `--protocol http2`（TCP/443）重试一次 → URL 写入仓库根
+   `cf_quick_url.txt`（当天生成的才是有效地址，旧的随重启作废）。
+   手机端每次用之前读一次 `cf_quick_url.txt`；过程日志 `cf_autostart.log`
+   （失败时末尾附 cloudflared 最后 12 行）。bat 里写死了仓库绝对路径，仓库搬家要先改 bat 再重新复制。
+
+   想临时手动挂后台（不开自启）时，分离进程启动：
 
    ```powershell
    Start-Process -WindowStyle Hidden -FilePath ".\cloudflared.exe" `
@@ -183,9 +198,12 @@ powershell -File scripts\cloudflare_tunnel.ps1 status
 | `login` 报 `Failed to write the certificate ... deadline exceeded` | 公司网络拦 CLI；浏览器已代下证书 → 复制到 `\.cloudflared\cert.pem`；凭据 JSON 缺就带代理重登（§3.1 代理小步） |
 | 终端停在 `Waiting for login...` 被 Ctrl+C | 凭据没写全，重做 login，这次别掐 |
 | `create` 报 `No file cert.pem ...` | 凭据没就位（目录空/缺 cert.pem）→ 按 §3.1 修复后再 create |
-| 手机打不开 | 电脑端隧道没跑（status 看 cloudflared）；quick 的话那个终端还开着吗？ |
+| 手机打不开 | 电脑端隧道没跑（status 看 cloudflared）；quick 手动版看那个终端还开着吗，自启版看 `cf_autostart.log` 末尾与 `cf_quick_url.txt` 是否当天生成 |
 | 隧道通但 401 / Token 失效 | 手机填的 token 和 `.env` 的 `LD_API_TOKEN` 不一致，重新复制 |
 | quick URL 突然失效 | 正常：quick 每次执行生成新 URL，Ctrl+C 后旧的作废 |
+| 手机连不上旧 quick URL | quick URL 每次启动即换、旧的立即作废——读 `cf_quick_url.txt` 拿当天新地址（§2 第 5 条） |
+| 自启没起来 / `cf_quick_url.txt` 是旧的 | 手动补跑一次启动文件夹里的 `localdots_tunnel_autostart.bat`（`cmd /ch 执行）；看仓库根 `cf_autostart.log`（失败时末尾附 cloudflared 最后 12 行日志） |
+| 30s 拿不到 URL（QUIC 被拦） | 脚本会自动降级 `--protocol http2`（TCP/443）再试 30s；两轮都失败多为 UDP+TCP443 双拦或 DNS 问题，换干净网络（手机热点）再试 |
 | 手机一直转圈 / 被拒 | 命名隧道：Access 策略是否放行你的邮箱、MFA 是否完成 |
 | `Waiting for login...` 久等、`\.cloudflared` 空 | 故障③：CLI 直连下载证书被 TLS 掐 → 错峰重试或 API Token 备选（§3.1） |
 | quick URL 首访 1033 / 转圈 | 预热期正常，等 1 分钟再试（§2 第 4 条） |
