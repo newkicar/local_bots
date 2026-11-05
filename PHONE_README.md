@@ -66,6 +66,10 @@
    手机端每次用之前读一次 `cf_quick_url.txt`；过程日志 `cf_autostart.log`
    （失败时末尾附 cloudflared 最后 12 行）。bat 里写死了仓库绝对路径，仓库搬家要先改 bat 再重新复制。
 
+   开机没网（Wi-Fi 没连上、飞行模式等）也没事：隧道进程在后台自动重试，
+   脚本会多盯 10 分钟，cloudflared 一重连就补写 `cf_quick_url.txt`；
+   10 分钟仍没 URL 才需要网络恢复后手动补跑一次启动文件夹里的 bat。
+
    想临时手动挂后台（不开自启）时，分离进程启动：
 
    ```powershell
@@ -204,6 +208,7 @@ powershell -File scripts\cloudflare_tunnel.ps1 status
 | 手机连不上旧 quick URL | quick URL 每次启动即换、旧的立即作废——读 `cf_quick_url.txt` 拿当天新地址（§2 第 5 条） |
 | 自启没起来 / `cf_quick_url.txt` 是旧的 | 手动补跑一次启动文件夹里的 `localdots_tunnel_autostart.bat`（`cmd /ch 执行）；看仓库根 `cf_autostart.log`（失败时末尾附 cloudflared 最后 12 行日志） |
 | 30s 拿不到 URL（QUIC 被拦） | 脚本会自动降级 `--protocol http2`（TCP/443）再试 30s；两轮都失败多为 UDP+TCP443 双拦或 DNS 问题，换干净网络（手机热点）再试 |
+| 开机没网（Wi-Fi 没连上 / 飞行模式） | 隧道进程自动重试，脚本多盯 10 分钟，cloudflared 重连后自动补写 `cf_quick_url.txt`；仍没有才在网络恢复后手动补跑 bat |
 | 手机一直转圈 / 被拒 | 命名隧道：Access 策略是否放行你的邮箱、MFA 是否完成 |
 | `Waiting for login...` 久等、`\.cloudflared` 空 | 故障③：CLI 直连下载证书被 TLS 掐 → 错峰重试或 API Token 备选（§3.1） |
 | quick URL 首访 1033 / 转圈 | 预热期正常，等 1 分钟再试（§2 第 4 条） |

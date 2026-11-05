@@ -95,7 +95,22 @@ if ($Url) {
     Write-Host "[OK] quick tunnel URL: $Url"
     Write-Host "[OK] saved to $UrlFile"
 } else {
-    Write-Host "[X] no URL after both attempts. Check firewall/DNS. Last log lines:"
+    # Rescue: network may be down at boot (no Wi-Fi / airplane mode). The last
+    # cloudflared (http2) is still running and auto-reconnects; keep watching
+    # up to 600s more and save the URL file as soon as it re-registers.
+    Write-Host "[..] no URL yet (network down?) - cloudflared keeps retrying; watching 600s ..."
+    for ($i = 0; $i -lt 100; $i++) {
+        $Url = Get-TunnelUrl 1
+        if ($Url) { break }
+        Start-Sleep -Seconds 5
+    }
+    if ($Url) {
+        Set-Content -Path $UrlFile -Value $Url -Encoding ASCII
+        Write-Host "[OK] quick tunnel URL: $Url (recovered after network came back)"
+        Write-Host "[OK] saved to $UrlFile"
+        exit 0
+    }
+    Write-Host "[X] still no URL after 600s watching. Network likely still down - re-run the startup bat when the network is back. Last log lines:"
     if (Test-Path $Log) { Get-Content $Log -Tail 12 }
     exit 1
 }

@@ -99,6 +99,8 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health -Headers @{ Authorization = "
 过程记 `cf_autostart.log`；QUIC 被网络拦时脚本自动降级 HTTP/2（TCP/443）重试一次。
 注意 bat 里写死了仓库绝对路径，仓库搬家要先改 bat 再重新复制。
 
+开机没网也没事：脚本会多盯 10 分钟，cloudflared 自动重连后补写 `cf_quick_url.txt`。
+
 ## 4. 网页怎么用
 
 浏览器打开 **http://127.0.0.1:8000/** → 输入 Token （就是 `.env` 里的 `LD_API_TOKEN` ）→ 进去。页面上就是全部功能：
@@ -157,6 +159,7 @@ powershell -File scripts\cloudflare_tunnel.ps1 quick
 - 手机用的地址直接读仓库根 `cf_quick_url.txt`；`cf_autostart.log` 记录当天启动过程；
 - QUIC/UDP 被拦的日子脚本自动降级 `--protocol http2`（TCP/443）再试，全程无人值守；
 - 记住：quick 的 URL **每次启动都会换**、旧的立即作废——别存手机书签当长期入口，每次用之前读一次 `cf_quick_url.txt` 即可。
+- 开机没网（Wi-Fi 没连上等）：脚本多盯 10 分钟，cloudflared 自动重连后补写 `cf_quick_url.txt`；仍没有就在网络恢复后手动补跑一次 bat；
 
 **第 2 步（正式使用）：命名隧道 + Access 身份核验（MFA）**
 
