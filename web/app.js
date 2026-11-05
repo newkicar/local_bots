@@ -15,6 +15,26 @@ const state = {
   seenNotifs: new Set(),  // 任务通知卡去重（票 10，上限 200 FIFO 淘汰）
 };
 
+/* ---------- 聊天记录持久化（方案 A）：localStorage，刷新页面不丢对话 ---------- */
+const HISTORY_KEY = "ld_chat_history";
+function loadHistory() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    if (Array.isArray(arr)) {
+      state.history = arr.filter(
+        (m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant")
+      ).map((m) => ({ role: m.role, content: m.content })).slice(-16);
+    }
+  } catch { state.history = []; }
+}
+function saveHistory() {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+}
+function restoreChatUI() {
+  for (const m of state.history) addMsg(m.role, m.content);
+}
+loadHistory();
+
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = s == null ? "" : String(s);
@@ -111,6 +131,7 @@ async function tryLogin(token) {
   connectSSE();
   refreshAll();
   startPolling();
+  restoreChatUI();
 }
 
 H("login-form").addEventListener("submit", (e) => {
@@ -122,6 +143,7 @@ H("login-form").addEventListener("submit", (e) => {
 });
 H("btn-logout").addEventListener("click", () => {
   localStorage.removeItem("ld_token");
+  localStorage.removeItem(HISTORY_KEY);
   location.reload();
 });
 
@@ -265,6 +287,7 @@ H("chat-form").addEventListener("submit", async (e) => {
   state.busy = true;
   addMsg("user", msg);
   state.history.push({ role: "user", content: msg });
+  saveHistory();
   const pend = addMsg("assistant", "秘书处理中…", "pending");
   try {
     const r = await api("/api/chat", {
@@ -277,6 +300,7 @@ H("chat-form").addEventListener("submit", async (e) => {
     addTaskChips(m, r.task_ids || []);
     state.history.push({ role: "assistant", content: reply });
     if (state.history.length > 16) state.history.splice(0, state.history.length - 16);
+    saveHistory();
     refreshTasks(); refreshBadges();
   } catch (err) {
     pend.remove();
