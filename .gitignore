@@ -18,3 +18,5 @@ workspace/
 
 # cloudflared quick tunnel 日志（ASCII 路径，见 PHONE_README §2 第 5 条）
 cf_quick.log
+cf_quick_url.txt
+cf_autostart.log
