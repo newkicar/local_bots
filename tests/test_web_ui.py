@@ -266,3 +266,19 @@ def test_frontend_auto_approval_mode_markers():
         assert css.status_code == 200
         for marker in (".auto-mode", ".auto-mode-note"):
             assert marker in css.text, marker
+
+
+def test_frontend_scroll_arrow_markers():
+    """悬浮回顶/回底控件：全面板共享一组浮动控件（贴 .wrap 滚动容器）+ 按可滚动量自动显隐；静态 marker 守门。"""
+    with TestClient(create_app(_settings("web11arrow"))) as c:
+        html = c.get("/").text
+        for marker in ('id="to-top"', 'id="to-bottom"', 'id="scroll-arrows"'):
+            assert marker in html, marker
+        js = c.get("/app.js")
+        assert js.status_code == 200
+        for marker in ("bindScrollArrows", "scrollHeight", 'behavior: "smooth"'):
+            assert marker in js.text, marker
+        css = c.get("/style.css")
+        assert css.status_code == 200
+        for marker in (".scroll-arrows", ".arrow"):
+            assert marker in css.text, marker

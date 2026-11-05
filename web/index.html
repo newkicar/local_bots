@@ -13,7 +13,7 @@
   <button id="btn-logout" class="ghost" type="button">退出</button>
 </header>
 
-<main class="wrap">
+<main class="wrap" id="wrap">
   <!-- 聊天面板 -->
   <section id="panel-chat" class="panel">
     <div id="chat-msgs" class="chat-msgs" aria-live="polite"></div>
@@ -56,11 +56,17 @@
 </main>
 
 <nav class="tabbar">
-  <button class="tab active" data-panel="chat" type="button">聊天</button>
-  <button class="tab" data-panel="tasks" type="button">任务<span class="badge hidden" id="badge-tasks"></span></button>
-  <button class="tab" data-panel="approvals" type="button">审批<span class="badge hidden" id="badge-approvals"></span></button>
-  <button class="tab" data-panel="results" type="button">结果<span class="badge hidden" id="badge-results"></span></button>
+  <button class="tab active" data-panel="chat" type="button"><span class="lbl">聊天</span></button>
+  <button class="tab" data-panel="tasks" type="button"><span class="lbl">任务</span><span class="badge hidden" id="badge-tasks"></span></button>
+  <button class="tab" data-panel="approvals" type="button"><span class="lbl">审批</span><span class="badge hidden" id="badge-approvals"></span></button>
+  <button class="tab" data-panel="results" type="button"><span class="lbl">结果</span><span class="badge hidden" id="badge-results"></span></button>
 </nav>
+
+<!-- 悬浮回顶/回底控件：四个面板共享，跟随 .wrap 滚动容器；不可滚动时自动隐藏 -->
+<div class="scroll-arrows" id="scroll-arrows">
+  <button id="to-top" class="arrow" type="button" title="回到顶部" aria-label="回到顶部">↑</button>
+  <button id="to-bottom" class="arrow" type="button" title="回到底部" aria-label="回到底部">↓</button>
+</div>
 
 <!-- 登录 -->
 <div id="login" class="overlay hidden">

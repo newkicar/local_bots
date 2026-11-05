@@ -534,6 +534,29 @@ function setBadge(name, n) {
   b.classList.toggle("hidden", n === 0);
 }
 
+/* ---------- 悬浮回顶/回底控件：跟随 .wrap 滚动容器，按可滚动量自动显隐 ---------- */
+(function bindScrollArrows() {
+  const wrap = H("wrap");
+  const up = H("to-top");
+  const down = H("to-bottom");
+  if (!wrap || !up || !down) return;
+  const sync = () => {
+    const over = wrap.scrollHeight > wrap.clientHeight + 8;
+    up.classList.toggle("hidden", !over);
+    down.classList.toggle("hidden", !over);
+  };
+  up.addEventListener("click", () => wrap.scrollTo({ top: 0, behavior: "smooth" }));
+  down.addEventListener("click", () => wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" }));
+  wrap.addEventListener("scroll", sync, { passive: true });
+  window.addEventListener("resize", sync);
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(sync);
+    ro.observe(wrap);
+    document.querySelectorAll(".panel").forEach((p) => ro.observe(p));
+  }
+  sync();
+})();
+
 /* ---------- 启动 ---------- */
 if (state.token) {
   tryLogin(state.token).catch(() => showLogin(""));
