@@ -96,10 +96,10 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health -Headers @{ Authorization = "
 **想把隧道也登录自启**（手机远程用，见第 7 节）：把仓库的 `scripts\cloudflare_quick_autostart.bat`
 复制进启动文件夹（`Win+R` → `shell:startup`），改名 `localdots_tunnel_autostart.bat`。
 每次登录即自动起 quick 隧道（免账号免凭据）：URL 写进仓库根 `cf_quick_url.txt`，
-过程记 `cf_autostart.log`；QUIC 被网络拦时脚本自动降级 HTTP/2（TCP/443）重试一次。
+并经 ntfy 自动推送到手机（主题 `local_dots-thomas8717`，见第 7 节），过程记 `cf_autostart.log`；QUIC 被网络拦时脚本自动降级 HTTP/2（TCP/443）重试一次。
 注意 bat 里写死了仓库绝对路径，仓库搬家要先改 bat 再重新复制。
 
-开机没网也没事：脚本会多盯 10 分钟，cloudflared 自动重连后补写 `cf_quick_url.txt`。
+开机没网也没事：脚本会多盯 10 分钟，cloudflared 自动重连后补写 `cf_quick_url.txt`（并经 ntfy 推送地址给手机）。
 
 ## 4. 网页怎么用
 
@@ -157,9 +157,10 @@ powershell -File scripts\cloudflare_tunnel.ps1 quick
 按第 3 节注册过 `localdots_tunnel_autostart.bat` 的话，登录后隧道自动起好，不用再手动敲命令：
 
 - 手机用的地址直接读仓库根 `cf_quick_url.txt`；`cf_autostart.log` 记录当天启动过程；
+- 同时经 ntfy 把地址自动推送到手机：手机装 ntfy 并订阅 `https://ntfy.sh/local_dots-thomas8717`，开机收到通知点开即当天地址，不用再读文件；ntfy 不可用时读文件兜底；
 - QUIC/UDP 被拦的日子脚本自动降级 `--protocol http2`（TCP/443）再试，全程无人值守；
 - 记住：quick 的 URL **每次启动都会换**、旧的立即作废——别存手机书签当长期入口，每次用之前读一次 `cf_quick_url.txt` 即可。
-- 开机没网（Wi-Fi 没连上等）：脚本多盯 10 分钟，cloudflared 自动重连后补写 `cf_quick_url.txt`；仍没有就在网络恢复后手动补跑一次 bat；
+- 开机没网（Wi-Fi 没连上等）：脚本多盯 10 分钟，cloudflared 自动重连后补写 `cf_quick_url.txt`（并补 ntfy 推送）；仍没有就在网络恢复后手动补跑一次 bat；
 
 **第 2 步（正式使用）：命名隧道 + Access 身份核验（MFA）**
 

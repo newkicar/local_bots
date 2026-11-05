@@ -11,6 +11,9 @@
 #   cf_quick.log      cloudflared log (fresh each run)
 #   cf_quick_url.txt  the fresh URL, written when the tunnel is up
 #
+# The URL is also pushed to the phone via ntfy (topic local_dots-thomas8717);
+# the push is best-effort - on failure the URL file remains the fallback.
+#
 # NOTE: quick-tunnel URL rotates on EVERY start; the URL is valid only until
 # the next boot / manual start. No Cloudflare account needed.
 
@@ -20,6 +23,7 @@ $Repo    = "D:\Python Project\local_dots"
 $Cf      = Join-Path $Repo "cloudflared.exe"
 $Log     = Join-Path $Repo "cf_quick.log"
 $UrlFile = Join-Path $Repo "cf_quick_url.txt"
+$NtfyTopic = "local_dots-thomas8717"
 
 function Stop-Cloudflared {
     $p = Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue
@@ -51,6 +55,19 @@ function Get-TunnelUrl([int]$Seconds) {
         }
     }
     return $null
+}
+
+# 5) Best-effort push of the fresh URL to the phone via ntfy: the phone side
+# subscribes to https://ntfy.sh/local_dots-thomas8717 in the ntfy app; a
+# failed push never blocks the autostart flow (the URL file stays the fallback).
+function Send-NtfyPush([string]$PushUrl) {
+    try {
+        Invoke-RestMethod -Method Post -Uri "https://ntfy.sh/$NtfyTopic" `
+            -Body "Local Dots quick tunnel is up: $PushUrl" -TimeoutSec 10 -ErrorAction Stop | Out-Null
+        Write-Host "[OK] pushed URL to phone (ntfy topic: $NtfyTopic)"
+    } catch {
+        Write-Host "[..] ntfy push failed (network issue?) - URL is still in $UrlFile"
+    }
 }
 
 Write-Host "[LocalDots] quick-tunnel autostart"
@@ -94,6 +111,7 @@ if ($Url) {
     Set-Content -Path $UrlFile -Value $Url -Encoding ASCII
     Write-Host "[OK] quick tunnel URL: $Url"
     Write-Host "[OK] saved to $UrlFile"
+    Send-NtfyPush $Url
 } else {
     # Rescue: network may be down at boot (no Wi-Fi / airplane mode). The last
     # cloudflared (http2) is still running and auto-reconnects; keep watching
@@ -108,6 +126,7 @@ if ($Url) {
         Set-Content -Path $UrlFile -Value $Url -Encoding ASCII
         Write-Host "[OK] quick tunnel URL: $Url (recovered after network came back)"
         Write-Host "[OK] saved to $UrlFile"
+        Send-NtfyPush $Url
         exit 0
     }
     Write-Host "[X] still no URL after 600s watching. Network likely still down - re-run the startup bat when the network is back. Last log lines:"
