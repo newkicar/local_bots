@@ -59,6 +59,15 @@ class Settings(BaseSettings):
         parts = [p.strip() for p in self.ld_secretary_authorized_dirs.split(";") if p.strip()]
         return [Path(p) for p in parts]
 
+    @property
+    def conversations_db_path(self) -> Path:
+        return self.ld_data_dir / "conversations.db"
+
+    @property
+    def memory_path(self) -> Path:
+        return self.ld_data_dir / "memory.json"
+
+
 
 @lru_cache
 def get_settings() -> Settings:

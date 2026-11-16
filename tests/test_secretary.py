@@ -303,7 +303,10 @@ def test_chat_endpoint_auth_and_shape():
 
         r1 = c.post("/api/chat", json={"message": "你好"}, headers=_headers())
         assert r1.status_code == 200, r1.text
-        assert r1.json() == {"reply": "你好，我可以帮你派发任务", "task_ids": []}
+        b1 = r1.json()
+        assert b1["reply"] == "你好，我可以帮你派发任务"
+        assert b1["task_ids"] == []
+        assert set(b1.keys()) >= {"reply", "task_ids", "conversation_id", "title"}
 
         r2 = c.post("/api/chat",
                     json={"message": "继续",
@@ -311,7 +314,7 @@ def test_chat_endpoint_auth_and_shape():
                                       {"role": "assistant", "content": "你好，我可以帮你派发任务"}]},
                     headers=_headers())
         assert r2.status_code == 200, r2.text
-        assert set(r2.json().keys()) == {"reply", "task_ids"}
+        assert set(r2.json().keys()) >= {"reply", "task_ids", "conversation_id", "title"}
 
 
 def test_secretary_source_discipline():

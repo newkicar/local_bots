@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
 from app.dispatcher import Dispatcher
 from app.settings import Settings
+from app.memory import MemoryStore
 from app.task_manager import InvalidTransition, TaskManager
 
 #: 发现类操作默认上限（构造函数 caps 可覆盖，测试用极小值）；超时/截断都返回 JSON，绝不失控。
@@ -98,9 +99,11 @@ class Secretary:
         *,
         model: BaseChatModel | None = None,
         caps: dict[str, Any] | None = None,
+        memory: "MemoryStore | None" = None,
     ) -> None:
         self._tm = tm
         self._dispatcher = dispatcher
+        self._memory = memory
         self._settings = settings
         self._caps = {**DEFAULT_CAPS, **(caps or {})}
         self._model = model
@@ -157,8 +160,24 @@ class Secretary:
         return self._agent
 
     def system_prompt(self) -> str:
-        """本实例的完整系统提示词：基础纪律 + 授权目录列表（发现工具入口；服务端仍强校验）。"""
-        return SYSTEM_PROMPT + self._authorized_roots_note()
+        """本实例的完整系统提示词：基础纪律 + 授权目录列表 + 跨对话共享记忆（若配置）。"""
+        prompt = SYSTEM_PROMPT + self._authorized_roots_note()
+        prompt += self._memory_note()
+        return prompt
+
+    def _memory_note(self) -> str:
+        """跨对话共享记忆（多对话共享、跨重启持久）；无条目时不注入。"""
+        if self._memory is None:
+            return ""
+        items = self._memory.list()
+        if not items:
+            return ""
+        lines = [f"- {it['content']}" for it in items[-20:]]
+        return (
+            "\n跨对话共享记忆（之前对话沉淀的长期结论，多个对话共享，可参考但需结合当前上下文核实）：\n"
+            + "\n".join(lines)
+            + "\n重要且长期有效的结论可用 save_memory 工具存入共享记忆（一两句话，勿存敏感信息）。"
+        )
 
     def _authorized_roots_note(self) -> str:
         lines = [f"- {p}" for p in self._roots_display] or ["-（未配置授权目录：只读发现不可用）"]
@@ -178,6 +197,31 @@ class Secretary:
             base_url=s.ld_secretary_base_url,
             api_key=s.ld_secretary_api_key,
         )
+
+    # ---------- 对话摘要（票 13：首轮回复后后台生成，直接调模型不走 agent） ----------
+
+    async def summarize(self, messages: list[dict[str, str]]) -> "str | None":
+        """把对话尾部消息总结为 ≤50 字中文摘要；失败返回 None（静默，绝不抛）。"""
+        try:
+            model = self._model if self._model is not None else self._default_model()
+            history_msgs: list[BaseMessage] = []
+            for h in (messages or [])[-8:]:
+                role = str(h.get("role", ""))
+                content = str(h.get("content", ""))
+                if role == "user" and content:
+                    history_msgs.append(HumanMessage(content=content))
+                elif role == "assistant" and content:
+                    history_msgs.append(AIMessage(content=content))
+            if not history_msgs:
+                return None
+            result = await model.ainvoke(
+                [SystemMessage(content="把这段对话总结成一句不超过50字的中文摘要，只输出摘要本身")]
+                + history_msgs
+            )
+            text = _text_of(getattr(result, "content", None))
+            return text or None
+        except Exception:
+            return None
 
     # ---------- 任务工具内核 ----------
 
@@ -493,7 +537,24 @@ class Secretary:
             """读取授权目录内文本文件（只读；按上限截断；二进制不读）。"""
             return await self._with_timeout(self._peek_file_core, path, max_chars)
 
-        return [
+        tools = [
             submit_task, start_agent_session, list_tasks, get_task,
             followup_task, cancel_task, list_dir, find_files, grep_files, peek_file,
         ]
+        if self._memory is not None:
+            @tool
+            async def save_memory(content: str) -> str:
+                """把重要且长期有效的结论存入跨对话共享记忆（多对话共享、跨重启持久）。
+                content：一两句话的结论（勿存敏感信息，如密钥与口令）。"""
+                try:
+                    out = self._memory.add(content)
+                    return json.dumps(
+                        {"saved": not out["deduped"] and out["ok"],
+                         "note": "相同内容已存在" if out["deduped"] else ("已保存" if out["ok"] else "内容为空，未保存")},
+                        ensure_ascii=False,
+                    )
+                except Exception as exc:  # 工具永不向 LLM 抛异常
+                    return _jerr(f"记忆保存失败: {exc}")
+
+            tools.append(save_memory)
+        return tools

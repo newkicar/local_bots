@@ -10,8 +10,15 @@
 <header class="topbar">
   <span class="brand">Local Dots</span>
   <span id="conn" class="conn" title="SSE 状态推送">● 离线</span>
+  <button id="btn-conv-toggle" class="ghost conv-toggle" type="button" title="对话">☰</button>
   <button id="btn-logout" class="ghost" type="button">退出</button>
 </header>
+<div class="layout">
+<aside id="conv-sidebar" aria-label="历史对话">
+  <button id="btn-new-conv" class="conv-new" type="button">＋ 新对话</button>
+  <div id="conv-list"></div>
+</aside>
+<div id="conv-backdrop" class="conv-backdrop hidden"></div>
 <main class="wrap" id="wrap">
   <!-- 聊天面板 -->
   <section id="panel-chat" class="panel">
@@ -61,7 +68,7 @@
     <div id="result-list"></div>
   </section>
 </main>
-
+</div>
 
 <nav class="tabbar">
   <button class="tab active" data-panel="chat" type="button"><span class="lbl">聊天</span></button>

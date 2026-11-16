@@ -15,6 +15,8 @@ const state = {
   seenNotifs: new Set(),  // 任务通知卡去重（票 10，上限 200 FIFO 淘汰）
   openDetails: new Set(),  // 已展开的任务详情：自动刷新全量重建后按此集合恢复，不再收起
   detailCache: new Map(),   // 展开时的完整任务对象（含 runs/notifications）：重建恢复优先用它，不再重新 fetch
+  activeConv: null,          // 票 13：选中的对话 conversation_id（null=未选，全量显示）
+  convTaskIds: new Set(),   // 票 13：当前对话派发过的 task_id（筛选域）
 };
 
 /* ---------- 聊天记录持久化（方案 A）：localStorage，刷新页面不丢对话 ---------- */
@@ -137,6 +139,7 @@ async function tryLogin(token) {
   refreshAll();
   startPolling();
   restoreChatUI();
+  migrateLegacyHistory();
 }
 
 H("login-form").addEventListener("submit", (e) => {
@@ -167,6 +170,7 @@ function connectSSE() {
       if (state.panel === "tasks" || state.panel === "results") refreshCurrent();
     }
     if (ev.type === "notification") chatTaskNotice(ev);
+    if (ev.type === "conversation_updated") loadConversations();
   };
   state.es = es;
 }
@@ -306,7 +310,11 @@ H("chat-form").addEventListener("submit", async (e) => {
   try {
     const r = await api("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ message: msg, history: state.history.slice(0, -1) }),
+      body: JSON.stringify({
+        message: msg,
+        history: state.history.slice(0, -1),
+        conversation_id: state.activeConv,
+      }),
     });
     pend.remove();
     const reply = r.reply || "（无文字回复）";
@@ -315,6 +323,12 @@ H("chat-form").addEventListener("submit", async (e) => {
     state.history.push({ role: "assistant", content: reply });
     if (state.history.length > 16) state.history.splice(0, state.history.length - 16);
     saveHistory();
+    if (r.conversation_id) {
+      const wasNew = state.activeConv !== r.conversation_id;
+      state.activeConv = r.conversation_id;
+      for (const tid of r.task_ids || []) state.convTaskIds.add(tid);
+      if (wasNew) loadConversations();
+    }
     refreshTasks(true); refreshBadges();
     if (stick) m.scrollIntoView({ block: "end" });
   } catch (err) {
@@ -327,10 +341,133 @@ H("chat-form").addEventListener("submit", async (e) => {
   }
 });
 
+/* ---------- 对话侧栏（票 13）：左侧历史对话选择 + 首轮自动摘要 + 跨对话共享记忆 ---------- */
+// 筛选域：选中对话时只看该对话派发的任务；未选中（activeConv=null）全量显示
+function convFilter(list, keyOf) {
+  if (!Array.isArray(list)) return [];
+  if (!state.activeConv) return list;
+  const key = keyOf || ((t) => t.task_id);
+  return list.filter((t) => state.convTaskIds.has(key(t)));
+}
+async function loadConversations() {
+  let rows;
+  try { rows = await api("/api/conversations"); } catch { return; }
+  if (!Array.isArray(rows)) rows = [];
+  const box = H("conv-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!rows.length) {
+    box.innerHTML = '<div class="conv-empty">暂无对话</div>';
+    return;
+  }
+  for (const c of rows) {
+    const item = document.createElement("div");
+    item.className = "conv-item" + (state.activeConv === c.conversation_id ? " active" : "");
+    const titleEl = document.createElement("div");
+    titleEl.className = "conv-title";
+    titleEl.textContent = c.title || "未命名对话";
+    const del = document.createElement("button");
+    del.className = "conv-del";
+    del.type = "button";
+    del.title = "删除对话";
+    del.textContent = "×";
+    del.addEventListener("click", (e) => { e.stopPropagation(); deleteConversation(c.conversation_id); });
+    item.appendChild(titleEl);
+    item.appendChild(del);
+    const sum = document.createElement("div");
+    sum.className = "conv-summary";
+    sum.textContent = c.summary || "";
+    item.appendChild(sum);
+    item.addEventListener("click", () => selectConversation(c.conversation_id));
+    box.appendChild(item);
+  }
+}
+async function selectConversation(cid) {
+  let d;
+  try { d = await api("/api/conversations/" + encodeURIComponent(cid)); } catch { return; }
+  if (!d || !Array.isArray(d.messages)) return;
+  state.activeConv = cid;
+  state.convTaskIds = new Set(d.task_ids || []);
+  state.openDetails.clear();
+  state.detailCache.clear();
+  const box = H("chat-msgs");
+  if (box) box.innerHTML = "";
+  state.history = d.messages.slice(-16).map((m) => ({ role: m.role, content: m.content }));
+  saveHistory();
+  if (box) for (const m of d.messages) addMsg(m.role, m.content, "no-follow");
+  const w = H("wrap");
+  if (w) w.scrollTo({ top: w.scrollHeight });
+  loadConversations();
+  closeConvDrawer();
+  refreshAll();
+}
+function newConversation() {
+  state.activeConv = null;
+  state.convTaskIds = new Set();
+  state.history = [];
+  saveHistory();
+  state.openDetails.clear();
+  state.detailCache.clear();
+  const box = H("chat-msgs");
+  if (box) box.innerHTML = "";
+  loadConversations();
+  refreshAll();
+  closeConvDrawer();
+}
+async function deleteConversation(cid) {
+  try { await api("/api/conversations/" + encodeURIComponent(cid), { method: "DELETE" }); } catch { return; }
+  if (state.activeConv === cid) {
+    state.activeConv = null;
+    state.convTaskIds = new Set();
+    state.history = [];
+    saveHistory();
+    const box = H("chat-msgs");
+    if (box) box.innerHTML = "";
+  }
+  loadConversations();
+  refreshAll();
+}
+/* 旧 localStorage 聊天记录一次性迁移：对话表为空且有旧记录 → 建新对话并移除本地键 */
+async function migrateLegacyHistory() {
+  let rows;
+  try { rows = await api("/api/conversations"); } catch { return; }
+  if (!Array.isArray(rows)) return;
+  if (rows.length > 0) return;
+  const legacy = state.history.slice();
+  if (!legacy.length) return;
+  try {
+    const c = await api("/api/conversations", {
+      method: "POST",
+      body: JSON.stringify({ messages: legacy }),
+    });
+    localStorage.removeItem(HISTORY_KEY);
+    if (c && c.conversation_id) { state.activeConv = c.conversation_id; state.convTaskIds = new Set(); }
+    loadConversations();
+  } catch { /* 迁移失败保留旧 localStorage，下次再试 */ }
+}
+function openConvDrawer() {
+  const sb = H("conv-sidebar"), bd = H("conv-backdrop");
+  if (sb) sb.classList.add("open");
+  if (bd) bd.classList.remove("hidden");
+}
+function closeConvDrawer() {
+  const sb = H("conv-sidebar"), bd = H("conv-backdrop");
+  if (sb) sb.classList.remove("open");
+  if (bd) bd.classList.add("hidden");
+}
+(function bindConvSidebar() {
+  const t = H("btn-conv-toggle");
+  if (t) t.addEventListener("click", openConvDrawer);
+  const n = H("btn-new-conv");
+  if (n) n.addEventListener("click", () => { newConversation(); openConvDrawer(); });
+  const b = H("conv-backdrop");
+  if (b) b.addEventListener("click", closeConvDrawer);
+})();
+
 /* ---------- 任务列表面板 ---------- */
 async function refreshTasks(preserveScroll) {
   try {
-    const tasks = await api("/api/tasks");
+    const tasks = convFilter(await api("/api/tasks"));
     renderTasks(tasks, preserveScroll);
   } catch { /* 401 已弹登录；网络错误保持旧列表 */ }
 }
@@ -463,6 +600,7 @@ H("btn-refresh-tasks").addEventListener("click", refreshTasks);
 async function refreshApprovals() {
   let items;
   try { items = await api("/api/approvals"); } catch { return; }
+  items = Array.isArray(items) ? convFilter(items, (a) => a.task_id) : [];
   const box = H("approval-list");
   box.innerHTML = "";
   setBadge("approvals", items.length);
@@ -529,7 +667,7 @@ for (const b of document.querySelectorAll(".auto-mode-btn")) {
 /* ---------- 结果面板 ---------- */
 async function refreshResults() {
   let tasks;
-  try { tasks = await api("/api/tasks"); } catch { return; }
+  try { tasks = convFilter(await api("/api/tasks")); } catch { return; }
   const done = tasks.filter((t) => TERMINAL.has(t.status));
   setBadge("results", done.length);
   const box = H("result-list");
@@ -561,10 +699,13 @@ H("btn-refresh-results").addEventListener("click", refreshResults);
 /* ---------- 角标 / 徽章 ---------- */
 async function refreshBadges() {
   let tasks;
-  try { tasks = await api("/api/tasks"); } catch { return; }
+  try { tasks = convFilter(await api("/api/tasks")); } catch { return; }
   setBadge("tasks", tasks.filter((t) => ACTIVE.has(t.status)).length);
   let ap = 0;
-  try { ap = (await api("/api/approvals")).length; } catch {}
+  try {
+    const apItems = await api("/api/approvals");
+    ap = (Array.isArray(apItems) ? convFilter(apItems, (a) => a.task_id) : []).length;
+  } catch {}
   setBadge("approvals", ap);
 }
 function setBadge(name, n) {
@@ -601,6 +742,7 @@ function setBadge(name, n) {
 /* ---------- 启动 ---------- */
 if (state.token) {
   tryLogin(state.token).catch(() => showLogin(""));
+  loadConversations();
 } else {
   showLogin("");
 }

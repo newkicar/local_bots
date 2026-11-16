@@ -260,3 +260,80 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
 .auto-mode-btn.warn { color: var(--warn); }
 .auto-mode-btn.warn.active { color: var(--warn); font-weight: 600; }
 .auto-mode-note { font-size: 13px; min-height: 18px; color: var(--muted); }
+
+/* ---------- 对话侧栏（票 13）：左侧历史对话选择栏 + 首轮摘要 + 跨对话共享记忆 ---------- */
+/* 布局容器：侧栏（桌面固定列 / 移动端抽屉）+ 主区共享 body flex 剩余高度 */
+.layout { flex: 1; display: flex; min-height: 0; }
+.layout .wrap { min-width: 0; }
+.conv-toggle { display: none; }
+
+/* 桌面（≥900px）：固定 260px 侧栏列，比顶栏更深的底 + 1px 暗线收边 */
+@media (min-width: 900px) {
+  #conv-sidebar {
+    width: 260px; flex: 0 0 260px;
+    background: var(--bg-deep); border-right: 1px solid #1a2028;
+    display: flex; flex-direction: column;
+    padding: 12px;
+  }
+}
+
+/* 移动端（<900px）：抽屉——默认藏到屏外，.open 滑入；backdrop 拦截点击 */
+@media (max-width: 899px) {
+  #conv-sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0;
+    width: min(280px, 80vw);
+    background: var(--bg-deep); border-right: 1px solid #1a2028;
+    display: flex; flex-direction: column;
+    padding: 12px;
+    transform: translateX(-103%);
+    transition: transform 0.2s ease;
+    z-index: 9;
+  }
+  #conv-sidebar.open { transform: none; }
+  .conv-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(10, 13, 17, .6);
+    z-index: 8;
+  }
+  .conv-toggle { display: inline-block; }
+}
+
+/* 新对话按钮：ghost 风格，与顶栏 .ghost 同一套语言 */
+.conv-new {
+    width: 100%; padding: 8px 12px; margin-bottom: 10px;
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px;
+    cursor: pointer; font-size: 13px; text-align: left;
+}
+.conv-new:hover { color: var(--text); border-color: var(--border-bright); }
+
+/* 对话列表：可滚动，选中 = 更亮一档中性表面 + 亮边框（与 .tab.active 同一纪律） */
+#conv-list { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.conv-empty { color: var(--muted); font-size: 12px; padding: 8px 4px; }
+.conv-item {
+    display: flex; align-items: flex-start; gap: 6px;
+    padding: 8px 10px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    cursor: pointer;
+}
+.conv-item:hover { border-color: var(--border-bright); }
+.conv-item.active { background: var(--raised); border-color: var(--border-bright); }
+.conv-title {
+    flex: 1; min-width: 0;
+    font-size: 13px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.conv-summary {
+    flex: 1; min-width: 0;
+    font-size: 12px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.conv-del {
+    flex: 0 0 auto; width: 20px; height: 20px; margin-top: 1px;
+    padding: 0; border: 0; border-radius: 999px;
+    background: transparent; color: var(--muted);
+    font-size: 14px; line-height: 1; cursor: pointer;
+    opacity: 0; transition: opacity 0.15s;
+}
+.conv-item:hover .conv-del { opacity: 1; }
+.conv-del:hover { color: var(--bad); }

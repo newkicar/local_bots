@@ -344,6 +344,7 @@ const _STATIC_IDS = new Set([
   "auto-mode-row", "auto-mode-note", "approval-list", "panel-results", "btn-refresh-results",
   "result-list", "badge-tasks", "badge-approvals", "badge-results", "scroll-arrows",
   "to-top", "to-bottom", "login", "login-form", "login-token", "login-err",
+  "btn-conv-toggle", "conv-sidebar", "btn-new-conv", "conv-list", "conv-backdrop",
 ]);
 const _createdEls = [];
 const _staticEls = {};
@@ -493,7 +494,8 @@ def test_tasks_panel_switch_scrolls_to_top():
     rep = json.loads(out)
     assert rep["lastTop"] == 0, "switchPanel(tasks) must scroll wrap to top (like results panel): " + out
     assert rep["writes"] == 0, "renderTasks on panel switch must not write back stale scrollTop: " + out
-
+
+
 def test_frontend_composer_sticky_and_static_no_cache():
     with TestClient(create_app(_settings("web12sticky"))) as c:
         js = c.get("/app.js")
@@ -521,3 +523,24 @@ def test_chat_reply_follow_and_panel_width():
         chat_m = re.search(r"#panel-chat\s*\{[^}]*?max-width:\s*(\d+)px", css.text)
         chat_w = int(chat_m.group(1)) if chat_m else (int(panel_m.group(1)) if panel_m else 0)
         assert chat_w >= 800, "chat panel narrower than standard panel: %s" % chat_w
+
+
+def test_frontend_conversation_sidebar_markers():
+    """票 13：左侧对话栏 + 首轮摘要 + 跨对话共享记忆——静态 marker 守门（html/js/css + 新 API 契约）。"""
+    with TestClient(create_app(_settings('web13sidebar'))) as c:
+        html = c.get('/').text
+        for marker in ('class="layout"', 'id="conv-sidebar"', 'id="conv-list"',
+                       'id="btn-new-conv"', 'id="btn-conv-toggle"', 'id="conv-backdrop"'):
+            assert marker in html, marker
+        js = c.get('/app.js')
+        assert js.status_code == 200
+        for marker in ('loadConversations', 'selectConversation', 'newConversation',
+                       'activeConv', 'convTaskIds', 'conversation_updated',
+                       '/api/conversations', 'migrateLegacyHistory', 'convFilter'):
+            assert marker in js.text, marker
+        css = c.get('/style.css')
+        assert css.status_code == 200
+        for marker in ('.layout', '#conv-sidebar', '.conv-item', '.conv-backdrop'):
+            assert marker in css.text, marker
+        assert c.get('/api/conversations', headers=_headers()).json() == []
+        assert c.get('/api/memory', headers=_headers()).json() == {'items': []}

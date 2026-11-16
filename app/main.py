@@ -26,6 +26,8 @@ from app.auto_approve import MODES, AutoApprover
 from app.dispatcher import Dispatcher
 from app.permissions import Blacklist, coarse_task_policy
 from app.reconcile import reconcile_on_startup
+from app.conversations import ConversationStore
+from app.memory import MemoryStore
 from app.secretary import Secretary
 from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
 
@@ -72,6 +74,12 @@ class ApprovalModeRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[dict[str, str]] = []
+    conversation_id: str | None = None
+
+
+class CreateConversationRequest(BaseModel):
+    title: str | None = None
+    messages: list[dict[str, str]] = []
 
 
 def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
@@ -99,6 +107,8 @@ def create_app(
 
     hub = SSEHub()
     tm = TaskManager(settings.tasks_db_path, notify=hub.publish)
+    conv_store = ConversationStore(settings.conversations_db_path)
+    memory = MemoryStore(settings.memory_path)
     bl = Blacklist(settings.blacklist_path)
     resolved_engines = _default_engines(settings) if engines is None else engines
     dispatcher = Dispatcher(
@@ -120,12 +130,13 @@ def create_app(
         sec = (
             secretary_factory(tm, dispatcher, settings)
             if secretary_factory is not None
-            else Secretary(tm, dispatcher, settings)
+            else Secretary(tm, dispatcher, settings, memory=memory)
         )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await tm.open()
+        await conv_store.open()
         # 重启核对（票 04）：以持久化状态为输入，恢复或转等待核实，绝不盲目重试
         await reconcile_on_startup(tm, resolved_engines, dispatcher)
         dispatcher.start()
@@ -133,9 +144,14 @@ def create_app(
         try:
             yield
         finally:
+            # 先收尾后台摘要任务（强引用防 GC；不 await 丢失结果语义）
+            bg = [t for t in app.state._bg_tasks if not t.done()]
+            if bg:
+                await asyncio.gather(*bg, return_exceptions=True)
             await gate.stop()
             await dispatcher.stop()
             await tm.close()
+            await conv_store.close()
 
     app = FastAPI(title="Local Dots V1.0", lifespan=lifespan)
     app.state.hub = hub
@@ -144,6 +160,9 @@ def create_app(
     app.state.gate = gate
     app.state.auto_approver = auto
     app.state.secretary = sec
+    app.state.conv_store = conv_store
+    app.state.memory = memory
+    app.state._bg_tasks: set[asyncio.Task] = set()
 
     async def _auth(request: Request) -> None:
         header = request.headers.get("authorization", "")
@@ -252,10 +271,86 @@ def create_app(
         except InvalidTransition as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
+    async def _summarize_bg(cid: str) -> None:
+        """首轮回复后后台生成对话摘要；SSE 推 conversation_updated；整体吞错。"""
+        try:
+            detail = await conv_store.get(cid)
+            if detail is None:
+                return
+            s = await sec.summarize(detail["messages"])
+            if s:
+                await conv_store.set_summary(cid, s)
+                await hub.publish({"type": "conversation_updated", "conversation_id": cid})
+        except Exception:
+            pass
+
     @app.post("/api/chat", dependencies=[auth])
     async def chat(body: ChatRequest) -> dict[str, Any]:
-        """秘书聊天（票 06）：自然语言派活与任务汇总；委托后立即返回，不等待引擎。"""
-        return await sec.chat(body.message, body.history or None)
+        """秘书聊天（票 06）：自然语言派活与任务汇总；委托后立即返回，不等待引擎。
+
+        票 13：消息按 conversation_id 归档（缺省新建对话）；首轮回复后后台生成摘要。
+        """
+        cid = body.conversation_id
+        existing = await conv_store.get(cid) if cid else None
+        if existing is None:
+            created = await conv_store.create()
+            cid = created["conversation_id"]
+            existing = created
+        await conv_store.append_message(cid, "user", body.message)
+        res = await sec.chat(body.message, body.history or None)
+        await conv_store.append_message(cid, "assistant", res["reply"])
+        await conv_store.link_tasks(cid, res["task_ids"])
+        title = existing.get("title")
+        if not title:
+            title = body.message[:20]
+            await conv_store.set_title(cid, title)
+        # 首轮判定：该对话刚满 2 条消息且无摘要 → 后台摘要（不 await）
+        count = await conv_store.message_count(cid)
+        detail = await conv_store.get(cid)
+        if count == 2 and not detail["summary"]:
+            task = asyncio.create_task(_summarize_bg(cid))
+            app.state._bg_tasks.add(task)
+            task.add_done_callback(app.state._bg_tasks.discard)
+        return {**res, "conversation_id": cid, "title": title}
+
+    # ---------- 对话与共享记忆（票 13） ----------
+
+    @app.get("/api/conversations", dependencies=[auth])
+    async def list_conversations() -> list[dict[str, Any]]:
+        return await conv_store.list_conversations()
+
+    @app.post("/api/conversations", status_code=201, dependencies=[auth])
+    async def create_conversation(body: CreateConversationRequest) -> dict[str, Any]:
+        conv = await conv_store.create(title=body.title)
+        for m in body.messages:
+            role, content = str(m.get("role", "")), str(m.get("content", ""))
+            if role in ("user", "assistant") and content:
+                await conv_store.append_message(conv["conversation_id"], role, content)
+        detail = await conv_store.get(conv["conversation_id"])
+        if detail["messages"] and not detail["title"]:
+            await conv_store.set_title(conv["conversation_id"], detail["messages"][0]["content"][:20])
+        return await conv_store.get(conv["conversation_id"])
+
+    @app.get("/api/conversations/{conversation_id}", dependencies=[auth])
+    async def get_conversation(conversation_id: str) -> dict[str, Any]:
+        detail = await conv_store.get(conversation_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        return detail
+
+    @app.delete("/api/conversations/{conversation_id}", dependencies=[auth])
+    async def delete_conversation(conversation_id: str) -> None:
+        if not await conv_store.delete(conversation_id):
+            raise HTTPException(status_code=404, detail="conversation not found")
+
+    @app.get("/api/memory", dependencies=[auth])
+    async def list_memory() -> dict[str, list[dict[str, str]]]:
+        return {"items": memory.list()}
+
+    @app.delete("/api/memory/{index}", dependencies=[auth])
+    async def delete_memory(index: int) -> None:
+        if not memory.remove(index):
+            raise HTTPException(status_code=404, detail="memory entry not found")
 
     @app.get("/api/notifications", dependencies=[auth])
     async def notifications(task_id: str = Query(...)) -> list[dict[str, Any]]:
