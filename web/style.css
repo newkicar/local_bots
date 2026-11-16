@@ -117,13 +117,15 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
 .approval .op { font-size: 13px; color: var(--warn); word-break: break-all; }
 .src { font-size: 12px; }
 
-/* 顶部标签栏：按钮式 tab，与在线抽签页同一布局/显示方式 */
+/* 底部标签栏（手机宽度）：按钮式 tab，与在线抽签页同一显示方式 */
 .tabbar {
-  display: flex; gap: 8px; padding: 12px 16px 4px;
+  display: flex; gap: 8px; padding: 8px 12px;
+  position: sticky; bottom: 0; z-index: 5;
+  background: var(--panel); border-top: 1px solid var(--border);
 }
 .tab {
   flex: 1; position: relative; padding: 11px;
-  border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
   border-radius: 10px; font-size: 16px; cursor: pointer;
 }
 /* 与在线抽签一致的按钮式 tab：选中 = accent 边框 + accent 文字加粗 */
@@ -163,11 +165,11 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
 @media (min-width: 900px) {
   .topbar { padding-left: 20px; padding-right: 20px; }
   .wrap { padding: 20px; }
-  .tabbar { padding-left: 20px; padding-right: 20px; }
+  .tabbar { position: static; }
 }
 
 /* 悬浮回顶/回底控件（全面板共享，贴 .wrap 滚动容器；不可滚动时 JS 自动隐藏） */
-.scroll-arrows { position: fixed; right: 14px; bottom: 14px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
+.scroll-arrows { position: fixed; right: 14px; bottom: 64px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
 .arrow {
   width: 44px; height: 44px; padding: 0;
   display: flex; align-items: center; justify-content: center;
