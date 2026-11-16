@@ -550,8 +550,10 @@ function setBadge(name, n) {
   if (!wrap || !up || !down) return;
   const sync = () => {
     const over = wrap.scrollHeight > wrap.clientHeight + 8;
+    const atBottom = over && wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 8;
     up.classList.toggle("hidden", !over);
-    down.classList.toggle("hidden", !over);
+    // 贴底时“回底”箭头正好压在聊天输入行（fixed 右下角）上会挡住输入/发送，贴底时隐藏
+    down.classList.toggle("hidden", !over || atBottom);
   };
   up.addEventListener("click", () => wrap.scrollTo({ top: 0, behavior: "smooth" }));
   down.addEventListener("click", () => wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" }));
