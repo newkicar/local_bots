@@ -15,6 +15,9 @@
 <main class="wrap" id="wrap">
   <!-- 聊天面板 -->
   <section id="panel-chat" class="panel">
+    <div class="panel-head">
+      <h2 class="panel-title">秘书</h2>
+    </div>
     <div id="chat-msgs" class="chat-msgs" aria-live="polite"></div>
     <form id="chat-form" class="chat-form">
       <input id="chat-input" type="text" placeholder="找秘书：派活 / 查任务 / 追问 / 取消…" autocomplete="off">
@@ -24,7 +27,8 @@
 
   <!-- 任务列表面板 -->
   <section id="panel-tasks" class="panel hidden">
-    <div class="panel-actions">
+    <div class="panel-head">
+      <h2 class="panel-title">任务</h2>
       <button id="btn-refresh-tasks" class="ghost" type="button">刷新</button>
     </div>
     <div id="task-list"></div>
@@ -32,14 +36,17 @@
 
   <!-- 审批面板 -->
   <section id="panel-approvals" class="panel hidden">
-    <div class="panel-actions">
+    <div class="panel-head">
+      <h2 class="panel-title">审批</h2>
       <button id="btn-refresh-approvals" class="ghost" type="button">刷新</button>
     </div>
     <div class="auto-mode" id="auto-mode-row">
       <span class="auto-mode-label">代审模式</span>
-      <button class="ghost auto-mode-btn" data-mode="manual" type="button">手动</button>
-      <button class="ghost auto-mode-btn" data-mode="auto_safe" type="button">有限代审</button>
-      <button class="warn auto-mode-btn" data-mode="yolo" type="button">YOLO 全放行</button>
+      <div class="auto-mode-seg">
+        <button class="ghost auto-mode-btn" data-mode="manual" type="button">手动</button>
+        <button class="ghost auto-mode-btn" data-mode="auto_safe" type="button">有限代审</button>
+        <button class="warn auto-mode-btn" data-mode="yolo" type="button">YOLO 全放行</button>
+      </div>
     </div>
     <div class="auto-mode-note" id="auto-mode-note"></div>
     <div id="approval-list"></div>
@@ -47,7 +54,8 @@
 
   <!-- 结果面板 -->
   <section id="panel-results" class="panel hidden">
-    <div class="panel-actions">
+    <div class="panel-head">
+      <h2 class="panel-title">结果</h2>
       <button id="btn-refresh-results" class="ghost" type="button">刷新</button>
     </div>
     <div id="result-list"></div>
