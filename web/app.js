@@ -13,6 +13,7 @@ const state = {
   panel: "chat",
   busy: false,
   seenNotifs: new Set(),  // 任务通知卡去重（票 10，上限 200 FIFO 淘汰）
+  openDetails: new Set(),  // 已展开的任务详情：自动刷新全量重建后按此集合恢复，不再收起
 };
 
 /* ---------- 聊天记录持久化（方案 A）：localStorage，刷新页面不丢对话 ---------- */
@@ -323,6 +324,7 @@ function renderTasks(tasks) {
   box.innerHTML = "";
   if (!tasks.length) { box.innerHTML = '<div class="empty">暂无任务</div>'; return; }
   for (const t of tasks) box.appendChild(taskCard(t));
+  for (const t of tasks) if (state.openDetails.has(t.task_id)) fillTaskDetail(t, H("detail-" + t.task_id));
 }
 function taskCard(t) {
   const card = document.createElement("div");
@@ -343,6 +345,13 @@ function taskCard(t) {
   card.appendChild(detail);
   return card;
 }
+function fillTaskDetail(t, detail) {
+  if (!detail) return;
+  detail.innerHTML = detailHtml(t);
+  detail.classList.remove("hidden");
+  bindTaskDetail(t, detail);
+}
+
 async function openTask(id) {
   await toggleTaskDetail(id, null);
   const el = H("task-" + id);
@@ -353,13 +362,12 @@ async function toggleTaskDetail(id, cached) {
   if (!detail) return;
   const visible = !detail.classList.contains("hidden");
   detail.classList.add("hidden");
-  if (visible) return;
+  if (visible) { state.openDetails.delete(id); return; }
   let t = cached;
   try { t = await api("/api/tasks/" + encodeURIComponent(id)); } catch { t = cached; }
   if (!t) return;
-  detail.innerHTML = detailHtml(t);
-  detail.classList.remove("hidden");
-  bindTaskDetail(t, detail);
+  state.openDetails.add(id);
+  fillTaskDetail(t, detail);
 }
 function detailHtml(t) {
   let runs = "";

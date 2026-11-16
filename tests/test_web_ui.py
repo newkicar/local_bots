@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 import httpx
 from fastapi.testclient import TestClient
 
@@ -282,3 +284,148 @@ def test_frontend_scroll_arrow_markers():
         assert css.status_code == 200
         for marker in (".scroll-arrows", ".arrow"):
             assert marker in css.text, marker
+
+
+# ---------- DOM 桩回归：任务详情展开态不得被自动刷新全量重建收起（Node 跑真 web/app.js + 最小 DOM 桩，零框架纪律） ----------
+# 桩的 _createdEls 逆向扫描 = 浏览器语义“被 innerHTML 清掉的节点查不到”；driver 模拟 10s 轮询 tick（同一 refreshTasks 全量重建路径）。
+_DOM_STUB_JS = r"""function _escText(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function _makeEl(id) {
+  const el = {
+    id: id || "",
+    _classes: new Set(),
+    _text: "",
+    _html: "",
+    children: [],
+    style: { cssText: "" },
+    dataset: {},
+    value: "",
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    addEventListener() {},
+    querySelector() { return _makeEl(null); },
+    querySelectorAll() { return []; },
+    scrollIntoView() {},
+    scrollTo() {},
+    focus() {},
+    remove() {},
+    appendChild(c) { el.children.push(c); return c; },
+  };
+  el.classList = {
+    add: (...ns) => ns.forEach((n) => el._classes.add(n)),
+    remove: (...ns) => ns.forEach((n) => el._classes.delete(n)),
+    contains: (n) => el._classes.has(n),
+    toggle: (n, force) => {
+      const want = force === undefined ? !el._classes.has(n) : !!force;
+      if (want) el._classes.add(n); else el._classes.delete(n);
+      return want;
+    },
+  };
+  Object.defineProperty(el, "className", {
+    get: () => Array.from(el._classes).join(" "),
+    set: (v) => { el._classes = new Set(String(v).split(/\s+/).filter(Boolean)); },
+  });
+  Object.defineProperty(el, "textContent", {
+    get: () => el._text,
+    set: (v) => { el._text = String(v); el._html = ""; },
+  });
+  Object.defineProperty(el, "innerHTML", {
+    get: () => (el._html !== "" ? el._html : _escText(el._text)),
+    set: (v) => { el._html = String(v); el._text = ""; el.children = []; },
+  });
+  return el;
+}
+const _STATIC_IDS = new Set([
+  "conn", "btn-logout", "wrap", "panel-chat", "chat-msgs", "chat-form", "chat-input",
+  "panel-tasks", "btn-refresh-tasks", "task-list", "panel-approvals", "btn-refresh-approvals",
+  "auto-mode-row", "auto-mode-note", "approval-list", "panel-results", "btn-refresh-results",
+  "result-list", "badge-tasks", "badge-approvals", "badge-results", "scroll-arrows",
+  "to-top", "to-bottom", "login", "login-form", "login-token", "login-err",
+]);
+const _createdEls = [];
+const _staticEls = {};
+function _lookup(id) {
+  for (let i = _createdEls.length - 1; i >= 0; i--) { const e = _createdEls[i]; if (e.id === id) return e; }
+  if (_STATIC_IDS.has(id)) return _staticEls[id] || (_staticEls[id] = _makeEl(id));
+  return null;
+}
+globalThis.document = {
+  hidden: false,
+  getElementById: _lookup,
+  createElement: (tag) => { const e = _makeEl(null); e.tagName = tag; _createdEls.push(e); return e; },
+  querySelectorAll: () => [],
+  addEventListener() {},
+};
+const _fetchCalls = [];
+globalThis.fetch = async (path) => {
+  _fetchCalls.push(String(path));
+  if (String(path) === "/api/tasks") {
+    return { ok: true, status: 200, json: async () => TASKS };
+  }
+  const m = String(path).match(/^\/api\/tasks\/([^/]+)$/);
+  if (m) {
+    const t = TASKS.find((x) => x.task_id === m[1]);
+    if (t) return { ok: true, status: 200, json: async () => Object.assign({}, t, DETAIL_EXTRA) };
+  }
+  return { ok: true, status: 200, json: async () => ({}) };
+};
+const _store = {};
+globalThis.localStorage = {
+  getItem: (k) => (k in _store ? _store[k] : null),
+  setItem: (k, v) => { _store[k] = String(v); },
+  removeItem: (k) => { delete _store[k]; },
+};
+globalThis.window = { addEventListener() {}, location: { reload() {} } };
+globalThis.EventSource = class { constructor() {} close() {} };
+globalThis.alert = () => {};
+const TASKS = [
+  { task_id: "T1", status: "running", engine: "jarvis", instruction: "demo" },
+  { task_id: "T2", status: "reported", engine: "codex", instruction: "done", result: "ok result" },
+];
+const DETAIL_EXTRA = {
+  engine_thread_id: "th-test",
+  writes_authorized: false,
+  workspace: "D:\\ws",
+  runs: [{ state: "reported", attempt: 1, origin: "chat", side_effects: [] }],
+};"""
+
+_DOM_DRIVER_JS = r"""(async () => {
+  state.panel = "tasks";
+  await refreshTasks();
+  await toggleTaskDetail("T2", null);
+  await toggleTaskDetail("T1", TASKS[0]);
+  let d1 = document.getElementById("detail-T1");
+  let d2 = document.getElementById("detail-T2");
+  const openBefore = !!(d1 && d2) && !d1.classList.contains("hidden") && !d2.classList.contains("hidden");
+  const dfBefore = _fetchCalls.filter((p) => p.indexOf("/api/tasks/") === 0).length;
+  // 模拟 10s 轮询 tick / SSE task_state / catchUp：同一全量重建路径
+  await refreshTasks();
+  d1 = document.getElementById("detail-T1"); d2 = document.getElementById("detail-T2");
+  const openAfter = !!(d1 && d2) && !d1.classList.contains("hidden") && !d2.classList.contains("hidden");
+  const contentRestored = !!(d2 && d2.innerHTML.indexOf("fu-T2") >= 0);
+  const dfAfter = _fetchCalls.filter((p) => p.indexOf("/api/tasks/") === 0).length;
+  process.stdout.write(JSON.stringify({ openBefore, openAfter, contentRestored, detailFetchesAfterRefresh: dfAfter - dfBefore }));
+  process.exit(openBefore && openAfter ? 0 : 1);
+})().catch((e) => { process.stdout.write("DRIVER_FAIL " + String(e)); process.exit(2); });"""
+
+
+def test_task_detail_expanded_state_survives_auto_refresh():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node unavailable; cannot run DOM-stub regression")
+    src = Path(__file__).resolve().parents[1].joinpath("web", "app.js").read_text(encoding="utf-8")
+    d = os.path.join(BASE, "dom")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    with open(os.path.join(d, "driver.js"), "w", encoding="utf-8") as f:
+        f.write(_DOM_STUB_JS + "\n" + src + "\n" + _DOM_DRIVER_JS)
+    proc = subprocess.run([node, os.path.join(d, "driver.js")], capture_output=True, text=True, timeout=30)
+    out = (proc.stdout or "").strip()
+    assert proc.returncode == 0, "driver failed rc=%s out=%s err=%s" % (proc.returncode, out, proc.stderr)
+    rep = json.loads(out)
+    assert rep["openBefore"], "precondition not met: detail not open before refresh: " + out
+    assert rep["openAfter"], "expanded detail collapsed after auto refresh (full re-render loses state): " + out
+    assert rep["contentRestored"], "detail content not restored from list data: " + out
+    assert rep["detailFetchesAfterRefresh"] == 0, "restore must reuse list data, not re-fetch details: " + out
