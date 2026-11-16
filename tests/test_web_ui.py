@@ -394,7 +394,7 @@ const DETAIL_EXTRA = {
 
 _DOM_DRIVER_JS = r"""(async () => {
   state.panel = "tasks";
-  await refreshTasks();
+  await refreshTasks(true);
   await toggleTaskDetail("T2", null);
   await toggleTaskDetail("T1", TASKS[0]);
   let d1 = document.getElementById("detail-T1");
@@ -402,7 +402,7 @@ _DOM_DRIVER_JS = r"""(async () => {
   const openBefore = !!(d1 && d2) && !d1.classList.contains("hidden") && !d2.classList.contains("hidden");
   const dfBefore = _fetchCalls.filter((p) => p.indexOf("/api/tasks/") === 0).length;
   // 模拟 10s 轮询 tick / SSE task_state / catchUp：同一全量重建路径
-  await refreshTasks();
+  await refreshTasks(true);
   d1 = document.getElementById("detail-T1"); d2 = document.getElementById("detail-T2");
   const openAfter = !!(d1 && d2) && !d1.classList.contains("hidden") && !d2.classList.contains("hidden");
   const contentRestored = !!(d2 && d2.innerHTML.indexOf("fu-T2") >= 0);
@@ -432,9 +432,9 @@ def test_task_detail_expanded_state_survives_auto_refresh():
     assert rep["detailFetchesAfterRefresh"] == 0, "restore must reuse list data, not re-fetch details: " + out
 _RACE_DRIVER_JS = r"""(async () => {
   state.panel = "tasks";
-  await refreshTasks();
+  await refreshTasks(true);
   const p = toggleTaskDetail("T2", null);  // expand in-flight (fetch pending)
-  await refreshTasks();                     // auto refresh rebuilds DOM while in-flight
+  await refreshTasks(true);                     // auto refresh rebuilds DOM while in-flight
   await p;                                  // backfill must land on the new DOM node
   const d2 = document.getElementById("detail-T2");
   const open = !!(d2) && !d2.classList.contains("hidden") && d2.innerHTML.indexOf("fu-T2") >= 0;
@@ -460,6 +460,40 @@ def test_task_detail_toggle_race_survives_rebuild():
     assert rep["raceOk"], "detail did not open on rebuilt DOM node after in-flight toggle + refresh: " + out
 
 
+_SWITCH_TOP_DRIVER_JS = r"""(async () => {
+  state.panel = "results";
+  const wrap = document.getElementById("wrap");
+  let writes = 0; // 记录全量重建是否写回 scrollTop（会取消进行中的 smooth 滚顶）
+  Object.defineProperty(wrap, "scrollTop", { get: () => 1200, set: () => { writes++; } });
+  const calls = [];
+  wrap.scrollTo = (o) => { calls.push(o ? o.top : o); };
+  switchPanel("tasks"); // 对齐“结果”页：切面板统一回到顶部
+  await new Promise((r) => setTimeout(r, 50)); // 等 switchPanel 触发的 refreshTasks 全量重建完成
+  const lastTop = calls.length ? calls[calls.length - 1] : null;
+  process.stdout.write(JSON.stringify({ lastTop, writes }));
+  process.exit(lastTop === 0 && writes === 0 ? 0 : 1);
+})().catch((e) => { process.stdout.write("DRIVER_FAIL " + String(e)); process.exit(2); });"""
+
+
+def test_tasks_panel_switch_scrolls_to_top():
+    """任务页切换滚顶（对齐“结果”页实现）：switchPanel 调 refreshTasks() 缺省不保留滚动，
+    全量重建不得写回旧 scrollTop（会取消回到顶部的 smooth 滚动）；后台刷新仍传 true 保持阅读位置。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node unavailable; cannot run DOM-stub regression")
+    src = Path(__file__).resolve().parents[1].joinpath("web", "app.js").read_text(encoding="utf-8")
+    d = os.path.join(BASE, "dom-switch-top")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    with open(os.path.join(d, "driver.js"), "w", encoding="utf-8") as f:
+        f.write(_DOM_STUB_JS + "\n" + src + "\n" + _SWITCH_TOP_DRIVER_JS)
+    proc = subprocess.run([node, os.path.join(d, "driver.js")], capture_output=True, text=True, timeout=30)
+    out = (proc.stdout or "").strip()
+    assert proc.returncode == 0, "driver failed rc=%s out=%s err=%s" % (proc.returncode, out, proc.stderr)
+    rep = json.loads(out)
+    assert rep["lastTop"] == 0, "switchPanel(tasks) must scroll wrap to top (like results panel): " + out
+    assert rep["writes"] == 0, "renderTasks on panel switch must not write back stale scrollTop: " + out
+
 def test_frontend_composer_sticky_and_static_no_cache():
     with TestClient(create_app(_settings("web12sticky"))) as c:
         js = c.get("/app.js")

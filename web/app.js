@@ -255,12 +255,12 @@ function switchPanel(name) {
   if (w) w.scrollTo({ top: name === "chat" ? w.scrollHeight : 0, behavior: "smooth" });
 }
 function refreshCurrent() {
-  if (state.panel === "tasks") refreshTasks();
+  if (state.panel === "tasks") refreshTasks(true);
   else if (state.panel === "approvals") refreshApprovals();
   else if (state.panel === "results") refreshResults();
 }
 function refreshAll() {
-  refreshTasks(); refreshApprovals(); refreshResults(); refreshBadges(); refreshAutoMode();
+  refreshTasks(true); refreshApprovals(); refreshResults(); refreshBadges(); refreshAutoMode();
 }
 
 /* ---------- 聊天面板 ---------- */
@@ -315,7 +315,7 @@ H("chat-form").addEventListener("submit", async (e) => {
     state.history.push({ role: "assistant", content: reply });
     if (state.history.length > 16) state.history.splice(0, state.history.length - 16);
     saveHistory();
-    refreshTasks(); refreshBadges();
+    refreshTasks(true); refreshBadges();
     if (stick) m.scrollIntoView({ block: "end" });
   } catch (err) {
     pend.remove();
@@ -328,20 +328,23 @@ H("chat-form").addEventListener("submit", async (e) => {
 });
 
 /* ---------- 任务列表面板 ---------- */
-async function refreshTasks() {
+async function refreshTasks(preserveScroll) {
   try {
     const tasks = await api("/api/tasks");
-    renderTasks(tasks);
+    renderTasks(tasks, preserveScroll);
   } catch { /* 401 已弹登录；网络错误保持旧列表 */ }
 }
-function renderTasks(tasks) {
+function renderTasks(tasks, preserveScroll) {
   const box = H("task-list");
   const wrap = H("wrap");
-  const top = wrap ? wrap.scrollTop : 0;
+  // 面板切换（switchPanel → refreshTasks() 缺省 false）：滚动定位统一交给 switchPanel，
+  // 重建不得写回旧 scrollTop（会取消“回到顶部”的 smooth 滚动，任务页切换后不滚顶的根因）；
+  // 后台刷新（10s 轮询 / SSE / catchUp / 聊天后刷新）传 preserveScroll=true：全量重建不打断阅读位置
+  const top = wrap && preserveScroll ? wrap.scrollTop : 0;
   box.innerHTML = "";
   if (!tasks.length) {
     box.innerHTML = '<div class="empty">暂无任务</div>';
-    if (wrap) wrap.scrollTop = top;
+    if (wrap && preserveScroll) wrap.scrollTop = top;
     return;
   }
   for (const t of tasks) box.appendChild(taskCard(t));
@@ -349,7 +352,7 @@ function renderTasks(tasks) {
     // 优先用展开时缓存的完整对象（含 runs/notifications），无缓存才退回列表数据
     fillTaskDetail(state.detailCache.get(t.task_id) || t, H("detail-" + t.task_id));
   }
-  if (wrap) wrap.scrollTop = top; // 全量重建不打断阅读位置（不被拉回顶）
+  if (wrap && preserveScroll) wrap.scrollTop = top; // 后台刷新全量重建不打断阅读位置（不被拉回顶）
 }
 function taskCard(t) {
   const card = document.createElement("div");
@@ -439,8 +442,8 @@ function bindTaskDetail(t, detail) {
         await api("/api/tasks/" + encodeURIComponent(t.task_id) + "/followup", {
           method: "POST", body: JSON.stringify({ instruction: instr }),
         });
-        refreshTasks(); refreshBadges();
-      } catch (err) { alert("追问失败：" + err.message); refreshTasks(); }
+        refreshTasks(true); refreshBadges();
+      } catch (err) { alert("追问失败：" + err.message); refreshTasks(true); }
     });
   }
   const cx = H("cx-" + t.task_id);
@@ -449,7 +452,7 @@ function bindTaskDetail(t, detail) {
       try {
         const r = await api("/api/tasks/" + encodeURIComponent(t.task_id) + "/cancel", { method: "POST" });
         alert("已取消（Side-Effect Ledger " + (r.ledger || []).length + " 条，只追加不回滚）");
-        refreshTasks(); refreshBadges();
+        refreshTasks(true); refreshBadges();
       } catch (err) { alert("取消失败：" + err.message); }
     });
   }
