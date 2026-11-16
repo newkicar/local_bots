@@ -54,7 +54,6 @@ body {
 /* 主区 */
 .wrap { flex: 1; overflow-y: auto; padding: 14px 12px 12px; }
 .panel { max-width: 860px; margin: 0 auto; min-height: 60%; }
-#panel-chat { max-width: 680px; }
 .hidden { display: none !important; }
 
 /* 面板头：句子式标题（左）+ 安静动作（右） */
@@ -113,6 +112,7 @@ body {
   border: 1px solid rgba(76, 194, 255, .3); color: var(--accent); cursor: pointer;
 }
 .chat-form {
+  position: sticky; bottom: 0; z-index: 4; /* 钉底：消息多时输入条+发送按钮不随消息滚走 */
   display: flex; gap: 6px;
   background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 14px; padding: 6px;
@@ -211,7 +211,7 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
 }
 
 /* 悬浮回顶/回底控件（全面板共享，贴 .wrap 滚动容器；不可滚动时 JS 自动隐藏） */
-.scroll-arrows { position: fixed; right: 14px; bottom: 64px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
+.scroll-arrows { position: fixed; right: 14px; bottom: 128px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
 .arrow {
   width: 44px; height: 44px; padding: 0;
   display: flex; align-items: center; justify-content: center;

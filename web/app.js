@@ -14,6 +14,7 @@ const state = {
   busy: false,
   seenNotifs: new Set(),  // 任务通知卡去重（票 10，上限 200 FIFO 淘汰）
   openDetails: new Set(),  // 已展开的任务详情：自动刷新全量重建后按此集合恢复，不再收起
+  detailCache: new Map(),   // 展开时的完整任务对象（含 runs/notifications）：重建恢复优先用它，不再重新 fetch
 };
 
 /* ---------- 聊天记录持久化（方案 A）：localStorage，刷新页面不丢对话 ---------- */
@@ -33,6 +34,9 @@ function saveHistory() {
 }
 function restoreChatUI() {
   for (const m of state.history) addMsg(m.role, m.content);
+  // 聊天页默认对齐最下方：恢复历史后滚到最新消息
+  const w = H("wrap");
+  if (w) w.scrollTo({ top: w.scrollHeight, behavior: "smooth" });
 }
 loadHistory();
 
@@ -229,7 +233,7 @@ function chatTaskNotice(ev) {
     else openTask(ev.task_id);
   });
   H("chat-msgs").appendChild(card);
-  card.scrollIntoView({ block: "end" });
+  if (chatNearBottom()) card.scrollIntoView({ block: "end" }); // 贴近底才跟随，翻历史不被拽回
 }
 
 
@@ -246,6 +250,9 @@ function switchPanel(name) {
   if (name === "tasks") refreshTasks();
   if (name === "approvals") refreshApprovals();
   if (name === "results") refreshResults();
+  // 默认滚动位：聊天贴底（最新消息），其余面板置顶
+  const w = H("wrap");
+  if (w) w.scrollTo({ top: name === "chat" ? w.scrollHeight : 0, behavior: "smooth" });
 }
 function refreshCurrent() {
   if (state.panel === "tasks") refreshTasks();
@@ -257,12 +264,17 @@ function refreshAll() {
 }
 
 /* ---------- 聊天面板 ---------- */
+function chatNearBottom() {
+  const w = H("wrap");
+  if (!w) return true;
+  return w.scrollTop + w.clientHeight >= w.scrollHeight - 120;
+}
 function addMsg(role, text, cls) {
   const m = document.createElement("div");
   m.className = "msg " + role + (cls ? " " + cls : "");
   m.textContent = text;
   H("chat-msgs").appendChild(m);
-  m.scrollIntoView({ block: "end" });
+  if (chatNearBottom()) m.scrollIntoView({ block: "end" }); // 贴近底才跟随，翻历史不被拽走
   return m;
 }
 function addTaskChips(holder, taskIds) {
@@ -290,6 +302,7 @@ H("chat-form").addEventListener("submit", async (e) => {
   state.history.push({ role: "user", content: msg });
   saveHistory();
   const pend = addMsg("assistant", "秘书处理中…", "pending");
+  const stick = chatNearBottom(); // 发送时贴底：回话到达自动跟底（期间插入的任务通知卡不打断跟随）
   try {
     const r = await api("/api/chat", {
       method: "POST",
@@ -303,9 +316,11 @@ H("chat-form").addEventListener("submit", async (e) => {
     if (state.history.length > 16) state.history.splice(0, state.history.length - 16);
     saveHistory();
     refreshTasks(); refreshBadges();
+    if (stick) m.scrollIntoView({ block: "end" });
   } catch (err) {
     pend.remove();
-    addMsg("assistant", "出错了：" + err.message);
+    const em = addMsg("assistant", "出错了：" + err.message);
+    if (stick) em.scrollIntoView({ block: "end" });
   } finally {
     state.busy = false;
     H("chat-input").focus();
@@ -321,10 +336,20 @@ async function refreshTasks() {
 }
 function renderTasks(tasks) {
   const box = H("task-list");
+  const wrap = H("wrap");
+  const top = wrap ? wrap.scrollTop : 0;
   box.innerHTML = "";
-  if (!tasks.length) { box.innerHTML = '<div class="empty">暂无任务</div>'; return; }
+  if (!tasks.length) {
+    box.innerHTML = '<div class="empty">暂无任务</div>';
+    if (wrap) wrap.scrollTop = top;
+    return;
+  }
   for (const t of tasks) box.appendChild(taskCard(t));
-  for (const t of tasks) if (state.openDetails.has(t.task_id)) fillTaskDetail(t, H("detail-" + t.task_id));
+  for (const t of tasks) if (state.openDetails.has(t.task_id)) {
+    // 优先用展开时缓存的完整对象（含 runs/notifications），无缓存才退回列表数据
+    fillTaskDetail(state.detailCache.get(t.task_id) || t, H("detail-" + t.task_id));
+  }
+  if (wrap) wrap.scrollTop = top; // 全量重建不打断阅读位置（不被拉回顶）
 }
 function taskCard(t) {
   const card = document.createElement("div");
@@ -367,7 +392,10 @@ async function toggleTaskDetail(id, cached) {
   try { t = await api("/api/tasks/" + encodeURIComponent(id)); } catch { t = cached; }
   if (!t) return;
   state.openDetails.add(id);
-  fillTaskDetail(t, detail);
+  if (state.detailCache.size >= 200) state.detailCache.delete(state.detailCache.keys().next().value);
+  state.detailCache.set(id, t);
+  // 竞态：await 期间自动刷新可能已全量重建 DOM，回填前重新取节点，落到新 DOM 上
+  fillTaskDetail(t, H("detail-" + id) || detail);
 }
 function detailHtml(t) {
   let runs = "";

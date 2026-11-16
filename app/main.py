@@ -298,7 +298,33 @@ def create_app(
     if web_dir.is_dir():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
 
-    return app
+    # 前端静态资源 no-cache：手机浏览器每次重新协商，避免“端上攥着旧 app.js 导致修复不生效”。
+    # 纯 ASGI 包装（非 BaseHTTPMiddleware，不缓冲 SSE/流式响应）；仅命中三个静态路径，/api 直通。
+    no_cache_paths = {"/", "/style.css", "/app.js"}
+
+    class _StaticNoCache:
+        def __init__(self, target):
+            self._target = target
+
+        def __getattr__(self, name):
+            # 前向到内层 FastAPI（app.state 等测试缝矛仍需可用）
+            return getattr(self._target, name)
+
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") != "http" or scope.get("path") not in no_cache_paths:
+                await self._target(scope, receive, send)
+                return
+
+            async def send_with_cache(message):
+                if message.get("type") == "http.response.start":
+                    headers = {k: v for k, v in message.get("headers", [])}
+                    headers.setdefault(b"cache-control", b"no-cache")
+                    message["headers"] = list(headers.items())
+                await send(message)
+
+            await self._target(scope, receive, send_with_cache)
+
+    return _StaticNoCache(app)
 
 
 app = create_app()
