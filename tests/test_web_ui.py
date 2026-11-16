@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -429,3 +430,60 @@ def test_task_detail_expanded_state_survives_auto_refresh():
     assert rep["openAfter"], "expanded detail collapsed after auto refresh (full re-render loses state): " + out
     assert rep["contentRestored"], "detail content not restored from list data: " + out
     assert rep["detailFetchesAfterRefresh"] == 0, "restore must reuse list data, not re-fetch details: " + out
+_RACE_DRIVER_JS = r"""(async () => {
+  state.panel = "tasks";
+  await refreshTasks();
+  const p = toggleTaskDetail("T2", null);  // expand in-flight (fetch pending)
+  await refreshTasks();                     // auto refresh rebuilds DOM while in-flight
+  await p;                                  // backfill must land on the new DOM node
+  const d2 = document.getElementById("detail-T2");
+  const open = !!(d2) && !d2.classList.contains("hidden") && d2.innerHTML.indexOf("fu-T2") >= 0;
+  process.stdout.write(JSON.stringify({ raceOk: open }));
+  process.exit(open ? 0 : 1);
+})().catch((e) => { process.stdout.write("DRIVER_FAIL " + String(e)); process.exit(2); });"""
+
+
+def test_task_detail_toggle_race_survives_rebuild():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node unavailable; cannot run DOM-stub regression")
+    src = Path(__file__).resolve().parents[1].joinpath("web", "app.js").read_text(encoding="utf-8")
+    d = os.path.join(BASE, "dom-race")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    with open(os.path.join(d, "driver.js"), "w", encoding="utf-8") as f:
+        f.write(_DOM_STUB_JS + "\n" + src + "\n" + _RACE_DRIVER_JS)
+    proc = subprocess.run([node, os.path.join(d, "driver.js")], capture_output=True, text=True, timeout=30)
+    out = (proc.stdout or "").strip()
+    assert proc.returncode == 0, "driver failed rc=%s out=%s err=%s" % (proc.returncode, out, proc.stderr)
+    rep = json.loads(out)
+    assert rep["raceOk"], "detail did not open on rebuilt DOM node after in-flight toggle + refresh: " + out
+
+
+def test_frontend_composer_sticky_and_static_no_cache():
+    with TestClient(create_app(_settings("web12sticky"))) as c:
+        js = c.get("/app.js")
+        assert js.status_code == 200
+        for marker in ("detailCache", "chatNearBottom", "openDetails"):
+            assert marker in js.text, marker
+        css = c.get("/style.css")
+        assert css.status_code == 200
+        assert re.search(r"\.chat-form\s*\{[^}]*?position:\s*sticky", css.text), ".chat-form must be sticky"
+        for path in ("/style.css", "/app.js"):
+            r = c.get(path)
+            assert r.headers.get("cache-control", "").lower() == "no-cache", path
+
+
+def test_chat_reply_follow_and_panel_width():
+    """发送时贴底：AI 回话到达自动跟底（期间插入的任务通知卡不打断跟随）；对话区不再窄于常规面板。"""
+    with TestClient(create_app(_settings("web13follow"))) as c:
+        js = c.get("/app.js")
+        assert js.status_code == 200
+        for marker in ("const stick = chatNearBottom();", "if (stick) m.scrollIntoView", "if (stick) em.scrollIntoView"):
+            assert marker in js.text, marker
+        css = c.get("/style.css")
+        assert css.status_code == 200
+        panel_m = re.search(r"\.panel\s*\{[^}]*?max-width:\s*(\d+)px", css.text)
+        chat_m = re.search(r"#panel-chat\s*\{[^}]*?max-width:\s*(\d+)px", css.text)
+        chat_w = int(chat_m.group(1)) if chat_m else (int(panel_m.group(1)) if panel_m else 0)
+        assert chat_w >= 800, "chat panel narrower than standard panel: %s" % chat_w
