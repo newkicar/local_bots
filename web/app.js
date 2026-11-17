@@ -394,6 +394,8 @@ async function loadConversations() {
   for (const c of rows) {
     const item = document.createElement("div");
     item.className = "conv-item" + (state.activeConv === c.conversation_id ? " active" : "");
+    const top = document.createElement("div");
+    top.className = "conv-top";
     const titleEl = document.createElement("div");
     titleEl.className = "conv-title";
     titleEl.textContent = c.title || "未命名对话";
@@ -403,8 +405,9 @@ async function loadConversations() {
     del.title = "删除对话";
     del.textContent = "×";
     del.addEventListener("click", (e) => { e.stopPropagation(); deleteConversation(c.conversation_id); });
-    item.appendChild(titleEl);
-    item.appendChild(del);
+    top.appendChild(titleEl);
+    top.appendChild(del);
+    item.appendChild(top);
     const sum = document.createElement("div");
     sum.className = "conv-summary";
     sum.textContent = c.summary || "";

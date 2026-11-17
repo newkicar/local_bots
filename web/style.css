@@ -311,13 +311,14 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
 #conv-list { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 6px; }
 .conv-empty { color: var(--muted); font-size: 12px; padding: 8px 4px; }
 .conv-item {
-    display: flex; align-items: flex-start; gap: 6px;
+    display: flex; flex-direction: column; align-items: stretch; gap: 4px;
     padding: 8px 10px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     cursor: pointer;
 }
 .conv-item:hover { border-color: var(--border-bright); }
 .conv-item.active { background: var(--raised); border-color: var(--border-bright); }
+.conv-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .conv-title {
     flex: 1; min-width: 0;
     font-size: 13px; font-weight: 600; color: var(--text);
@@ -329,7 +330,7 @@ button.warn { background: transparent; border: 1px solid var(--warn); color: var
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .conv-del {
-    flex: 0 0 auto; width: 20px; height: 20px; margin-top: 1px;
+    flex: 0 0 auto; width: 20px; height: 20px;
     padding: 0; border: 0; border-radius: 999px;
     background: transparent; color: var(--muted);
     font-size: 14px; line-height: 1; cursor: pointer;
