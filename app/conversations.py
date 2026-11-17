@@ -165,6 +165,14 @@ class ConversationStore:
         if task_ids:
             await self.db.commit()
 
+    async def find_conversations_for_task(self, task_id: str) -> list[str]:
+        """反查链接了该任务的所有对话（票 14 跟进推送分发面；rowid 序）。"""
+        async with self.db.execute(
+            "SELECT conversation_id FROM conversation_tasks WHERE task_id=? ORDER BY rowid",
+            (task_id,),
+        ) as cur:
+            return [r[0] for r in await cur.fetchall()]
+
     async def set_title(self, conversation_id: str, title: str) -> None:
         async with self.db.execute(
             "UPDATE conversations SET title=? WHERE conversation_id=?", (title, conversation_id)

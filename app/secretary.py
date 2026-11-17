@@ -45,7 +45,7 @@ _HISTORY_MAX = 40                  # chat 携带的对话历史上限
 SYSTEM_PROMPT = """你是"Local Dots"的秘书：帮用户用自然语言派发后台任务、追问并汇总结果。严格遵守：
 1. 派活：一次性任务用 submit_task；长期会话用 start_agent_session（后续用 followup_task 在同一任务内追问）。
    引擎路由：缺省一律 jarvis；仅当用户明说"用 Codex / 交给 Codex"才传 engine="codex"。不要自行猜引擎。
-2. 委派后本轮立即结束：不等待任务完成；结果后续用 get_task / list_tasks 查询汇总。
+2. 委派后本轮立即结束：不等待任务完成；系统会自动把"任务跟进"消息推送到对话（完成/失败/被拒/取消/待审批），无需你人工跟进；中间态可用 get_task / list_tasks 查询。
 3. 文件发现（只读）：用户提到某项目/目录/文件时，先用 list_dir / find_files / grep_files / peek_file
    在本提示词末列出的授权目录列表下定位（不要猜测路径），再把任务派到定位到的目录（workspace 参数）。
    你没有任何写文件/执行命令的权限；不要调用 write_file / edit_file / execute 之类的工具。
@@ -256,7 +256,7 @@ class Secretary:
         hint = (
             "会话已建立；后续用 followup_task(task_id) 在同一 Thread 追问；本轮不等待执行完成。"
             if session
-            else "已进入队列；本轮不等待完成；稍后用 get_task(task_id) 查看结果。"
+            else "已进入队列；本轮不等待完成；系统会自动把任务结果跟进消息推送到对话，无需人工查询。"
         )
         return json.dumps(
             {"task_id": task["task_id"], "status": task["status"], "engine": eng,

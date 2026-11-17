@@ -27,6 +27,7 @@ from app.dispatcher import Dispatcher
 from app.permissions import Blacklist, coarse_task_policy
 from app.reconcile import reconcile_on_startup
 from app.conversations import ConversationStore
+from app.followup import handle_task_event
 from app.memory import MemoryStore
 from app.secretary import Secretary
 from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
@@ -106,8 +107,14 @@ def create_app(
         bl_path.write_text("[]", encoding="utf-8")
 
     hub = SSEHub()
-    tm = TaskManager(settings.tasks_db_path, notify=hub.publish)
     conv_store = ConversationStore(settings.conversations_db_path)
+
+    async def _notify(event: dict[str, Any]) -> None:
+        """票 14：任务状态事件 → SSE 广播 + 对话跟进报告（确定性闭环）。"""
+        await hub.publish(event)
+        await handle_task_event(event, tm, conv_store, hub)
+
+    tm = TaskManager(settings.tasks_db_path, notify=_notify)
     memory = MemoryStore(settings.memory_path)
     bl = Blacklist(settings.blacklist_path)
     resolved_engines = _default_engines(settings) if engines is None else engines

@@ -170,7 +170,7 @@ function connectSSE() {
       if (state.panel === "tasks" || state.panel === "results") refreshCurrent();
     }
     if (ev.type === "notification") chatTaskNotice(ev);
-    if (ev.type === "conversation_updated") loadConversations();
+    if (ev.type === "conversation_updated") { loadConversations(); reloadConversationMessages(ev.conversation_id); }
   };
   state.es = es;
 }
@@ -274,6 +274,21 @@ function chatNearBottom() {
   return w.scrollTop + w.clientHeight >= w.scrollHeight - 120;
 }
 function addMsg(role, text, cls) {
+  if (role === "report") {
+    const card = document.createElement("div");
+    card.className = "msg report" + (cls ? " " + cls : "");
+    const tag = document.createElement("span");
+    tag.className = "report-tag";
+    tag.textContent = "任务跟进";
+    const body = document.createElement("div");
+    body.className = "report-body";
+    body.textContent = text;
+    card.appendChild(tag);
+    card.appendChild(body);
+    H("chat-msgs").appendChild(card);
+    if (chatNearBottom()) card.scrollIntoView({ block: "end" });
+    return card;
+  }
   const m = document.createElement("div");
   m.className = "msg " + role + (cls ? " " + cls : "");
   m.textContent = text;
@@ -294,6 +309,21 @@ function addTaskChips(holder, taskIds) {
   }
   holder.appendChild(chips);
 }
+/* 票 14：SSE conversation_updated -> 只重载当前激活对话的消息（不干扰其他对话的阅读位置） */
+async function reloadConversationMessages(cid) {
+  if (cid !== state.activeConv) return;
+  let d;
+  try { d = await api("/api/conversations/" + encodeURIComponent(cid)); } catch { return; }
+  if (!d || !Array.isArray(d.messages)) return;
+  state.convTaskIds = new Set(d.task_ids || []);
+  const w = H("wrap");
+  const nearBottom = chatNearBottom();
+  const prevTop = w ? w.scrollTop : 0;
+  const box = H("chat-msgs");
+  if (box) box.innerHTML = "";
+  for (const m of d.messages) addMsg(m.role, m.content, "no-follow");
+  if (w) w.scrollTop = nearBottom ? w.scrollHeight : prevTop; // 贴底才跟新消息，翻历史不被拽走
+}
 H("chat-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (state.busy) return;
@@ -312,7 +342,7 @@ H("chat-form").addEventListener("submit", async (e) => {
       method: "POST",
       body: JSON.stringify({
         message: msg,
-        history: state.history.slice(0, -1),
+        history: state.history.filter((m) => m.role === "user" || m.role === "assistant").slice(0, -1),
         conversation_id: state.activeConv,
       }),
     });
@@ -392,7 +422,7 @@ async function selectConversation(cid) {
   state.detailCache.clear();
   const box = H("chat-msgs");
   if (box) box.innerHTML = "";
-  state.history = d.messages.slice(-16).map((m) => ({ role: m.role, content: m.content }));
+  state.history = d.messages.filter((m) => m.role === "user" || m.role === "assistant").slice(-16).map((m) => ({ role: m.role, content: m.content }));
   saveHistory();
   if (box) for (const m of d.messages) addMsg(m.role, m.content, "no-follow");
   const w = H("wrap");

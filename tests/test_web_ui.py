@@ -544,3 +544,17 @@ def test_frontend_conversation_sidebar_markers():
             assert marker in css.text, marker
         assert c.get('/api/conversations', headers=_headers()).json() == []
         assert c.get('/api/memory', headers=_headers()).json() == {'items': []}
+
+def test_frontend_followup_report_markers():
+    """票 14：任务跟进报告卡——静态 marker 守门（js 渲染/重载/LLM 上下文双保险过滤 + css 卡片样式）。"""
+    with TestClient(create_app(_settings('web14report'))) as c:
+        js = c.get('/app.js')
+        assert js.status_code == 200
+        for marker in ('reloadConversationMessages', 'role === "report"', 'report-tag',
+                       'm.role === "user" || m.role === "assistant"'):
+            assert marker in js.text, marker
+        css = c.get('/style.css')
+        assert css.status_code == 200
+        for marker in ('.msg.report', '.report-tag'):
+            assert marker in css.text, marker
+

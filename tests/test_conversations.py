@@ -253,8 +253,17 @@ def test_chat_conversation_end_to_end():
         r2 = c.post("/api/chat", json={"message": "继续", "conversation_id": cid}, headers=h)
         assert r2.status_code == 200, r2.text
         assert r2.json()["conversation_id"] == cid
-        d = c.get(f"/api/conversations/{cid}", headers=h).json()
-        assert [m["role"] for m in d["messages"]] == ["user", "assistant", "user", "assistant"]
+        # 票 14：任务终态跟进报告自动落库（HoldEngine release 已置位 → 秒完成；轮询 ≤5s）
+        deadline = time.time() + 5
+        d = {}
+        while time.time() < deadline:
+            d = c.get(f"/api/conversations/{cid}", headers=h).json()
+            if any(m["role"] == "report" for m in d["messages"]):
+                break
+            time.sleep(0.05)
+        assert [m["role"] for m in d["messages"] if m["role"] != "report"] == ["user", "assistant", "user", "assistant"]
+        reports = [m for m in d["messages"] if m["role"] == "report"]
+        assert len(reports) == 1 and tid in reports[0]["content"]
         assert d["task_ids"] == [tid]
         assert d["title"] == msg[:20]
         assert len(c.get("/api/conversations", headers=h).json()) == 1
