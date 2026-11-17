@@ -1,7 +1,7 @@
 /* Local Dots 前端逻辑——无框架。一切经 /api，前端不直连引擎。 */
 "use strict";
 
-const TERMINAL = new Set(["reported", "failed", "rejected", "cancelled"]);
+const TERMINAL = new Set(["completed", "reported", "failed", "rejected", "cancelled"]); // "completed" 为瞬态(→reported/追问queued)，结果面板按已了结项显示，保证“查看结果”定位必达
 const ACTIVE = new Set(["queued", "running", "waiting-approval", "interrupted"]);
 const REASON_LABEL = { blacklist: "黑名单拦截", restart_reconciliation: "重启核对", jarvis_interrupt: "Jarvis HITL 审批点" };
 const H = (id) => document.getElementById(id);
@@ -230,11 +230,10 @@ function chatTaskNotice(ev) {
     '<div class="tn-actions"><button class="ghost">' + (isApproval ? "去审批" : "查看结果") + "</button></div>";
   card.querySelector("button").addEventListener("click", async () => {
     if (isApproval) { switchPanel("approvals"); refreshApprovals(); return; }
-    switchPanel("results");
-    await refreshResults();
-    const el = H("res-" + ev.task_id);
-    if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
-    else openTask(ev.task_id);
+    // 定位模式：切面板不滚顶；结果渲染后按 task_id 精确定位到对应项（点“结果”标签的路径仍保持滚顶）
+    switchPanel("results", { jumpTo: ev.task_id });
+    await refreshResults(ev.task_id);
+    if (!H("res-" + ev.task_id)) openTask(ev.task_id); // 极少数（被对话筛选排除）：退回任务详情
   });
   H("chat-msgs").appendChild(card);
   if (chatNearBottom()) card.scrollIntoView({ block: "end" }); // 贴近底才跟随，翻历史不被拽回
@@ -245,18 +244,20 @@ function chatTaskNotice(ev) {
 document.querySelectorAll(".tab").forEach((btn) => {
   btn.addEventListener("click", () => switchPanel(btn.dataset.panel));
 });
-function switchPanel(name) {
+function switchPanel(name, opts) {
   state.panel = name;
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
   ["chat", "tasks", "approvals", "results"].forEach((p) =>
     H("panel-" + p).classList.toggle("hidden", p !== name)
   );
+  const jump = opts && opts.jumpTo;
   if (name === "tasks") refreshTasks();
   if (name === "approvals") refreshApprovals();
-  if (name === "results") refreshResults();
-  // 默认滚动位：聊天贴底（最新消息），其余面板置顶
+  // 定位模式：由调用方 await refreshResults(jump) 渲染并定位，此处不重复刷新
+  if (name === "results" && !jump) refreshResults();
+  // 默认滚动位：聊天贴底（最新消息），其余面板置顶；定位模式留给目标项 scrollIntoView，不滚顶
   const w = H("wrap");
-  if (w) w.scrollTo({ top: name === "chat" ? w.scrollHeight : 0, behavior: "smooth" });
+  if (w && !jump) w.scrollTo({ top: name === "chat" ? w.scrollHeight : 0, behavior: "smooth" });
 }
 function refreshCurrent() {
   if (state.panel === "tasks") refreshTasks(true);
@@ -695,7 +696,7 @@ for (const b of document.querySelectorAll(".auto-mode-btn")) {
 }
 
 /* ---------- 结果面板 ---------- */
-async function refreshResults() {
+async function refreshResults(jumpId) {
   let tasks;
   try { tasks = convFilter(await api("/api/tasks")); } catch { return; }
   const done = tasks.filter((t) => TERMINAL.has(t.status));
@@ -703,12 +704,27 @@ async function refreshResults() {
   const box = H("result-list");
   box.innerHTML = "";
   if (!done.length) { box.innerHTML = '<div class="empty">暂无已终结任务</div>'; return; }
-  for (const t of done.slice(0, 30)) box.appendChild(resultCard(t));
+  let list = done.slice(0, 30);
+  // 跳转定位：目标在前 30 条之外时也必须保证在场（task_id 精确匹配）
+  if (jumpId && !list.some((t) => t.task_id === jumpId)) {
+    const extra = done.find((t) => t.task_id === jumpId);
+    if (extra) list = list.concat([extra]);
+  }
+  for (const t of list) box.appendChild(resultCard(t));
+  if (jumpId) {
+    const el = H("res-" + jumpId);
+    if (el) {
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+      el.classList.add("res-flash");
+      el.addEventListener("animationend", () => el.classList.remove("res-flash"), { once: true });
+    }
+  }
 }
 function resultCard(t) {
   const card = document.createElement("div");
   card.className = "card";
   card.id = "res-" + t.task_id;  // 聊天面板通知卡跳转目标
+  card.dataset.taskId = t.task_id; // 稳定锚点：精确匹配用 task_id，不做模糊文本匹配
   const ledger = (t.runs || []).flatMap((r) => r.side_effects || []);
   card.innerHTML =
     '<div style="display:flex;gap:8px;align-items:center;cursor:pointer" class="rc-head">' +

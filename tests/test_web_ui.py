@@ -558,3 +558,78 @@ def test_frontend_followup_report_markers():
         for marker in ('.msg.report', '.report-tag'):
             assert marker in css.text, marker
 
+
+_JUMP_DRIVER_JS = r"""(async () => {
+  // T9 sits past the top-30 results window: T2 + 35 newer reported tasks ahead of it
+  for (let i = 0; i < 35; i++) TASKS.push({ task_id: "Z" + i, status: "reported", engine: "codex", instruction: "z" + i });
+  TASKS.push({ task_id: "T9", status: "completed", engine: "jarvis", instruction: "jump target", result: "jumped" });
+  const wrap = document.getElementById("wrap");
+  const scrollCalls = [];
+  wrap.scrollTo = (o) => { scrollCalls.push(o && o.top); };
+  const sivCalls = [];
+  const _origById = document.getElementById;
+  document.getElementById = (id) => {
+    const el = _origById(id);
+    if (el && !el._sivWrapped) { el._sivWrapped = true; el.scrollIntoView = () => { sivCalls.push(el.id); }; }
+    return el;
+  };
+  state.panel = "chat";
+  switchPanel("results"); // tab path: keeps scrolling wrap to top
+  await new Promise((r) => setTimeout(r, 30));
+  const topAfterTab = scrollCalls[scrollCalls.length - 1];
+  const callsBeforeJump = scrollCalls.length;
+  switchPanel("results", { jumpTo: "T9" }); // jump path: no top scroll; caller renders + locates
+  await refreshResults("T9");
+  const noTopOnJump = scrollCalls.length === callsBeforeJump;
+  const el = _origById("res-T9");
+  const landed = sivCalls[sivCalls.length - 1] === "res-T9";
+  const flash = !!(el && el.classList.contains("res-flash"));
+  const anchor = !!(el && el.dataset.taskId === "T9");
+  process.stdout.write(JSON.stringify({ topAfterTab, noTopOnJump, landed, flash, anchor, exists: !!el }));
+  process.exit(!!el && topAfterTab === 0 && noTopOnJump && landed && flash && anchor ? 0 : 1);
+})().catch((e) => { process.stdout.write("DRIVER_FAIL " + String(e)); process.exit(2); });"""
+
+
+def test_frontend_result_jump_markers():
+    """'View Result' jump markers: TERMINAL includes transient 'completed'; jumpTo mode skips top scroll;
+    result cards anchor via data-task-id; out-of-top-30 backfill; res-flash highlight; the results tab still scrolls to top."""
+    with TestClient(create_app(_settings("web15jump"))) as c:
+        js = c.get("/app.js")
+        assert js.status_code == 200
+        for marker in (
+            '"completed", "reported", "failed", "rejected", "cancelled"',
+            'switchPanel("results", { jumpTo: ev.task_id })',
+            "card.dataset.taskId = t.task_id",
+            "res-flash",
+            "const jump = opts && opts.jumpTo",
+            'if (name === "results" && !jump) refreshResults()',
+        ):
+            assert marker in js.text, marker
+        css = c.get("/style.css")
+        assert css.status_code == 200
+        for marker in (".res-flash", "@keyframes res-flash"):
+            assert marker in css.text, marker
+
+
+def test_results_jump_to_task_item():
+    """'View Result' jump behavior (DOM-stub driver): the results tab still scrolls to top; jumpTo mode does not,
+    and after rendering, res-T9 (outside the top-30 window) is located by exact task_id and flash-highlighted."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node unavailable; cannot run DOM-stub regression")
+    src = Path(__file__).resolve().parents[1].joinpath("web", "app.js").read_text(encoding="utf-8")
+    d = os.path.join(BASE, "dom-result-jump")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    with open(os.path.join(d, "driver.js"), "w", encoding="utf-8") as f:
+        f.write(_DOM_STUB_JS + "\n" + src + "\n" + _JUMP_DRIVER_JS)
+    proc = subprocess.run([node, os.path.join(d, "driver.js")], capture_output=True, text=True, timeout=30)
+    out = (proc.stdout or "").strip()
+    assert proc.returncode == 0, "driver failed rc=%s out=%s err=%s" % (proc.returncode, out, proc.stderr)
+    rep = json.loads(out)
+    assert rep["topAfterTab"] == 0, "tab switch to results must still scroll to top: " + out
+    assert rep["noTopOnJump"], "jumpTo mode must not trigger scroll-to-top: " + out
+    assert rep["exists"], "res-T9 card must exist after jump render: " + out
+    assert rep["landed"], "must scrollIntoView res-T9 (exact task_id match): " + out
+    assert rep["flash"], "located card must get res-flash highlight: " + out
+    assert rep["anchor"], "card must carry data-task-id anchor: " + out
