@@ -24,6 +24,7 @@ def _settings(name: str, **kw) -> Settings:
         ld_data_dir=os.path.join(d, "data"),
         ld_workspace_dir=os.path.join(d, "workspace"),
         ld_api_token="test-token",
+        ld_agent_sync_on_startup=False,  # 票 07：这些测试不跑启动 sync（**kw 可覆盖）
         _env_file=None,
         **kw,
     )

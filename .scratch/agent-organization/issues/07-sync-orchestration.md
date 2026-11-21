@@ -9,8 +9,8 @@ agent_sync_runs 追加（sync_id/时间/计数/errors）。触发：FastAPI life
 
 **Blocked by:** 03, 06
 
-**Status:** open
+**Status:** done
 
-- [ ] orchestrator + 变更分类（metadata vs behavior）
-- [ ] 启动钩子 + API + CLI
-- [ ] 测试（幂等、override 保护、missing 不删行）并提交
+- [x] orchestrator + 变更分类（metadata vs behavior）
+- [x] 启动钩子 + API + CLI
+- [x] 测试（幂等、override 保护、missing 不删行）并提交

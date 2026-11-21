@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Codex CLI（ADR-0002：子进程，继承 ~/.codex/config.toml，绝不改该文件）
     ld_codex_cli: str = "codex"
 
+    # 票 07：agent 启动 sync 开关（默认开；sync 失败不阻断启动，仅记日志）
+    ld_agent_sync_on_startup: bool = True
+
     @property
     def tasks_db_path(self) -> Path:
         return self.ld_data_dir / "tasks.db"

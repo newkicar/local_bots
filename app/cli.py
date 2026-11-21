@@ -1,9 +1,9 @@
-"""Local Dots 最小 CLI（python -m app.cli）：Agent 目录只读检视。
+"""Local Dots 最小 CLI（python -m app.cli）：Agent 目录检视 + sync。
 
 票 02 落地：agents list [--status X] / agents inspect <agent_id>；
 输出 JSON（ensure_ascii=False, indent=2），供人工核对目录快照。
-票 07 将扩展 agents sync（同步编排入口）。
-纪律：CLI 只读 catalog，不改状态；配置走 .env/环境变量（get_settings）。
+票 07 落地：agents sync [--scope user|project]（CLI 唯一写路径，只动 catalog 快照与 runs 记录）。
+纪律：list/inspect 只读；sync 不碰 override（alias/路由等）；配置走 .env/环境变量（get_settings）。
 """
 from __future__ import annotations
 
@@ -33,6 +33,12 @@ async def _run(action: str, ns: argparse.Namespace) -> int:
                 print(f"agent not found: {ns.agent_id}", file=sys.stderr)
                 return 1
             _dump(agent)
+        elif action == "sync":
+            from app.agents.sync import AgentSyncOrchestrator
+
+            orch = AgentSyncOrchestrator(catalog)
+            scopes = (ns.scope,) if ns.scope else ("user", "project")
+            _dump({sc: await orch.run_sync(sc) for sc in scopes})
         return 0
     finally:
         await catalog.close()
@@ -47,8 +53,15 @@ def main(argv: list[str] | None = None) -> int:
     p_list.add_argument("--status", default=None, help="按 discovery_status 过滤")
     p_inspect = asub.add_parser("inspect", help="检视单个 agent")
     p_inspect.add_argument("agent_id", help="agent_id，如 jarvis:default / codex:worker")
+    p_sync = asub.add_parser(
+        "sync", help="执行一轮 agent sync（缺省 user+project 各一轮）"
+    )
+    p_sync.add_argument(
+        "--scope", choices=["user", "project"], default=None,
+        help="只同步指定 scope；缺省 user+project 各一轮",
+    )
     ns = parser.parse_args(argv)
-    if ns.group == "agents" and ns.action in ("list", "inspect"):
+    if ns.group == "agents" and ns.action in ("list", "inspect", "sync"):
         return asyncio.run(_run(ns.action, ns))
     parser.print_help()
     return 0

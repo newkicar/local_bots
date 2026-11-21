@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Any, Callable
 
@@ -22,6 +23,7 @@ from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
 from app.agents.catalog import AgentCatalog, InvalidAgentTransition
+from app.agents.sync import AgentSyncOrchestrator, VALID_SYNC_SCOPES
 from app.approval import ApprovalGate
 from app.auto_approve import MODES, AutoApprover
 from app.dispatcher import Dispatcher
@@ -32,6 +34,8 @@ from app.followup import handle_task_event
 from app.memory import MemoryStore
 from app.secretary import Secretary
 from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
+
+logger = logging.getLogger(__name__)
 
 
 class SSEHub:
@@ -82,6 +86,10 @@ class ChatRequest(BaseModel):
 class CreateConversationRequest(BaseModel):
     title: str | None = None
     messages: list[dict[str, str]] = []
+
+
+class AgentSyncRequest(BaseModel):
+    scope: str = "user"
 
 
 def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
@@ -149,6 +157,14 @@ def create_app(
         await conv_store.open()
         # 重启核对（票 04）：以持久化状态为输入，恢复或转等待核实，绝不盲目重试
         await reconcile_on_startup(tm, resolved_engines, dispatcher)
+        # 票 07：启动 agent sync（默认开；失败不阻断启动，仅记日志）
+        if settings.ld_agent_sync_on_startup:
+            try:
+                orch = AgentSyncOrchestrator(catalog)
+                await orch.run_sync("user")
+                await orch.run_sync("project")
+            except Exception:
+                logger.exception("agent 启动 sync 失败（不阻断启动）")
         dispatcher.start()
         gate.start()
         try:
@@ -291,6 +307,13 @@ def create_app(
             return await catalog.set_override(agent_id, enabled=False)
         except KeyError:
             raise HTTPException(status_code=404, detail="agent not found")
+
+    @app.post("/api/agents/sync", dependencies=[auth])
+    async def sync_agents(body: AgentSyncRequest) -> dict[str, Any]:
+        """票 07：手动 agent sync（与启动 sync 等价；只动快照，永不覆盖 override）。"""
+        if body.scope not in VALID_SYNC_SCOPES:
+            raise HTTPException(status_code=400, detail="scope 仅限 user / project")
+        return await AgentSyncOrchestrator(catalog).run_sync(body.scope)
 
     @app.get("/api/approvals", dependencies=[auth])
     async def list_approvals() -> list[dict[str, Any]]:

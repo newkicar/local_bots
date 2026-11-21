@@ -9,6 +9,10 @@
   无 list_profiles → 如实上报 discovery_unsupported 并记录最小 API 诉求；
   catalog 保留内建 jarvis:default。绝不 import Jarvis 内部模块、绝不发明参数；
 - 本服务只做发现与快照 upsert，不做 mark_missing（那是票 07 sync orchestrator 的活）。
+
+票 07：同 engine 可注册多个 provider（如 codex user reader + project reader）；
+engine 内按注册顺序执行，同对象重复注册幂等；
+discover 报告形状与票 03 一致（engines 条目逐 provider）。
 """
 from __future__ import annotations
 
@@ -62,27 +66,38 @@ class DiscoveryResult:
 class AgentDiscoveryService:
     """发现编排器：按 engine 注册 provider，discover(scope) 批量执行并 upsert ok 结果。
 
+    - 同 engine 支持多 provider（如 codex user + project reader，票 07）；
+      engine 内按注册顺序执行；同对象重复注册幂等；
     - provider 失败隔离：单个 provider 抛错只记入该 engine 的 errors，不阻塞其余；
     - unsupported provider 不改 catalog（内建种子原样保留）；
-    - 重复注册同 provider 幂等；provider 按 engine 名排序执行（结果确定性）。
+    - 按 engine 名排序执行（结果确定性）。
     """
 
     def __init__(self, catalog: AgentCatalog) -> None:
         self._catalog = catalog
-        self._providers: dict[str, DiscoveryProvider] = {}
+        self._providers: dict[str, list[DiscoveryProvider]] = {}
 
     # ---------- provider 注册表 ----------
     def register_provider(self, provider: DiscoveryProvider) -> None:
-        self._providers[provider.engine] = provider
+        bucket = self._providers.setdefault(provider.engine, [])
+        if not any(provider is p for p in bucket):
+            bucket.append(provider)
 
     def engines(self) -> list[str]:
         return sorted(self._providers)
 
+    def providers(self) -> list[DiscoveryProvider]:
+        """扁平列表：engine 名升序，engine 内注册顺序（票 07 sync 全集断言用）。"""
+        out: list[DiscoveryProvider] = []
+        for engine in sorted(self._providers):
+            out.extend(self._providers[engine])
+        return out
+
     # ---------- 发现 ----------
     async def discover(self, scope: str = "user") -> dict[str, Any]:
-        """对所有已注册引擎执行发现；ok 结果 upsert 入 catalog（metadata-only）。
+        """对所有已注册 provider 执行发现；ok 结果 upsert 入 catalog（metadata-only）。
 
-        返回 {"scope", "engines": [逐引擎报告], "upserted", "unsupported", "errors"}。
+        返回 {"scope", "engines": [逐 provider 报告], "upserted", "unsupported", "errors"}。
         """
         report: dict[str, Any] = {
             "scope": scope,
@@ -92,45 +107,45 @@ class AgentDiscoveryService:
             "errors": [],
         }
         for engine in sorted(self._providers):
-            provider = self._providers[engine]
-            try:
-                result = await provider.discover(scope)
-            except Exception as exc:  # provider 失败隔离
-                detail = f"{type(exc).__name__}: {exc}"
-                logger.warning("discovery provider %s 失败: %s", engine, detail)
-                report["errors"].append({"engine": engine, "detail": detail})
-                report["engines"].append(
-                    {"engine": engine, "status": DISCOVERY_ERROR, "detail": detail}
-                )
-                continue
-            if result.status == DISCOVERY_OK:
-                for desc in result.agents:
-                    await self._catalog.upsert_agent(desc, change_kind=result.change_kind)
-                report["upserted"] += len(result.agents)
-                if result.errors:
-                    report["errors"].extend(
-                        {"engine": engine, **e} for e in result.errors
+            for provider in self._providers[engine]:
+                try:
+                    result = await provider.discover(scope)
+                except Exception as exc:  # provider 失败隔离
+                    detail = f"{type(exc).__name__}: {exc}"
+                    logger.warning("discovery provider %s 失败: %s", engine, detail)
+                    report["errors"].append({"engine": engine, "detail": detail})
+                    report["engines"].append(
+                        {"engine": engine, "status": DISCOVERY_ERROR, "detail": detail}
                     )
-                report["engines"].append(
-                    {"engine": engine, "status": DISCOVERY_OK,
-                     "count": len(result.agents),
-                     "file_errors": len(result.errors)}
-                )
-            elif result.status == DISCOVERY_UNSUPPORTED:
-                report["unsupported"].append(
-                    {"engine": engine, "detail": result.detail,
-                     "errors": list(result.errors)}
-                )
-                report["engines"].append(
-                    {"engine": engine, "status": DISCOVERY_UNSUPPORTED,
-                     "detail": result.detail}
-                )
-            else:
-                detail = f"provider 返回未知状态: {result.status}"
-                report["errors"].append({"engine": engine, "detail": detail})
-                report["engines"].append(
-                    {"engine": engine, "status": DISCOVERY_ERROR, "detail": detail}
-                )
+                    continue
+                if result.status == DISCOVERY_OK:
+                    for desc in result.agents:
+                        await self._catalog.upsert_agent(desc, change_kind=result.change_kind)
+                    report["upserted"] += len(result.agents)
+                    if result.errors:
+                        report["errors"].extend(
+                            {"engine": engine, **e} for e in result.errors
+                        )
+                    report["engines"].append(
+                        {"engine": engine, "status": DISCOVERY_OK,
+                         "count": len(result.agents),
+                         "file_errors": len(result.errors)}
+                    )
+                elif result.status == DISCOVERY_UNSUPPORTED:
+                    report["unsupported"].append(
+                        {"engine": engine, "detail": result.detail,
+                         "errors": list(result.errors)}
+                    )
+                    report["engines"].append(
+                        {"engine": engine, "status": DISCOVERY_UNSUPPORTED,
+                         "detail": result.detail}
+                    )
+                else:
+                    detail = f"provider 返回未知状态: {result.status}"
+                    report["errors"].append({"engine": engine, "detail": detail})
+                    report["engines"].append(
+                        {"engine": engine, "status": DISCOVERY_ERROR, "detail": detail}
+                    )
         return report
 
 
