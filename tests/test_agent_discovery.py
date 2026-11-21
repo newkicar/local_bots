@@ -104,7 +104,7 @@ async def test_jarvis_provider_reports_unsupported_and_builtins_preserved():
     svc = build_default_discovery(cat)
     report = await svc.discover("user")
     assert report["upserted"] == 0 and report["errors"] == []
-    assert report["unsupported"] == [{"engine": "jarvis", "detail": JARVIS_MINIMAL_API_ASK}]
+    assert report["unsupported"] == [{"engine": "jarvis", "detail": JARVIS_MINIMAL_API_ASK, "errors": []}]
     b = await cat.get_agent("jarvis:default")
     assert b is not None and b["discovery_status"] == "available"
     await cat.close()

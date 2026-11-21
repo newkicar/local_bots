@@ -8,8 +8,8 @@ codex:<name>）。内建 codex:default/worker/explorer 已随 02 播种，此票
 
 **Blocked by:** 02
 
-**Status:** open
+**Status:** done
 
-- [ ] reader（CODEX_HOME 尊重 + 坏文件容忍）
-- [ ] 结果→catalog 写入（discovered/pending_review 按自动启用配置）
-- [ ] 测试并提交
+- [x] reader（CODEX_HOME 尊重 + 坏文件容忍）
+- [x] 结果→catalog 写入（discovered/pending_review 按自动启用配置）
+- [x] 测试并提交

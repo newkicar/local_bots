@@ -53,6 +53,10 @@ class DiscoveryResult:
     status: str
     agents: list[dict[str, Any]] = field(default_factory=list)
     detail: str = ""
+    errors: list[dict[str, str]] = field(default_factory=list)
+    # metadata-only reader 声明 "metadata"；含行为（prompt/instructions）hash 的
+    # reader 声明 "behavior"（hash 变化 + 原状态可路由 → catalog 拉回 pending_review）
+    change_kind: str = "metadata"
 
 
 class AgentDiscoveryService:
@@ -101,14 +105,22 @@ class AgentDiscoveryService:
                 continue
             if result.status == DISCOVERY_OK:
                 for desc in result.agents:
-                    await self._catalog.upsert_agent(desc, change_kind="metadata")
+                    await self._catalog.upsert_agent(desc, change_kind=result.change_kind)
                 report["upserted"] += len(result.agents)
+                if result.errors:
+                    report["errors"].extend(
+                        {"engine": engine, **e} for e in result.errors
+                    )
                 report["engines"].append(
                     {"engine": engine, "status": DISCOVERY_OK,
-                     "count": len(result.agents)}
+                     "count": len(result.agents),
+                     "file_errors": len(result.errors)}
                 )
             elif result.status == DISCOVERY_UNSUPPORTED:
-                report["unsupported"].append({"engine": engine, "detail": result.detail})
+                report["unsupported"].append(
+                    {"engine": engine, "detail": result.detail,
+                     "errors": list(result.errors)}
+                )
                 report["engines"].append(
                     {"engine": engine, "status": DISCOVERY_UNSUPPORTED,
                      "detail": result.detail}

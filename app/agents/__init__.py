@@ -11,6 +11,7 @@ from app.agents.catalog import (
     AgentCatalog,
     InvalidAgentTransition,
 )
+from app.agents.codex_discovery import CodexUserDiscoveryProvider
 from app.agents.discovery import (
     AgentDiscoveryService,
     DiscoveryResult,
@@ -29,4 +30,6 @@ __all__ = [
     "DiscoveryResult",
     "JarvisDiscoveryProvider",
     "build_default_discovery",
-]
+    "CodexUserDiscoveryProvider",
+]
+
