@@ -1,4 +1,4 @@
-'''票 09：适配器能力面。
+'''票 09/10：适配器能力面。
 
 base.EngineAdapter.capabilities() 基类安全默认（全 False，FakeEngine 继承不动）；
 Jarvis 如实上报能力面；显式非默认 jarvis profile → 显式 EngineError
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.adapters.base import EngineAdapter, EngineError
+from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
 from tests.fakes import FakeEngine
 
@@ -104,3 +105,36 @@ def test_jarvis_default_profile_path_unchanged():
     task2 = {"task_id": "t3", "instruction": "x", "workspace": _ws()}
     assert asyncio.run(a.execute(task2, _run(), "t3", _Hooks())) == "done"
     assert agent.called == 2
+
+
+# ---------- codex 如实上报能力面（票 10） ----------
+def test_codex_capabilities_honest():
+    caps = CodexAdapter().capabilities()
+    assert caps["agent_discovery"] is True
+    assert caps["direct_profile_invocation"] == "default_only"
+    assert caps["invocation_modes"]["default"] == "direct"
+    assert caps["invocation_modes"]["worker"] == "delegated_only"
+    assert caps["invocation_modes"]["explorer"] == "delegated_only"
+    assert caps["invocation_modes"]["custom"] == "delegated_only"
+    assert caps["non_default_profile_policy"] == "explicit_failure"
+
+
+# ---------- delegated_only 顶层调用 → 显式 EngineError（CLI 绝不启动） ----------
+def test_codex_delegated_only_top_level_explicit_failure():
+    spawned: list = []
+
+    async def spawn(cmd: list, cwd: str):
+        spawned.append(cmd)
+        raise AssertionError("delegated_only profile 绝不得启动 CLI")
+
+    a = CodexAdapter(cli="codex", spawn=spawn)
+    task = {"task_id": "t9", "instruction": "x", "workspace": _ws(),
+            "engine_profile_id": "worker"}
+    try:
+        asyncio.run(a.execute(task, _run(), None, _Hooks()))
+    except EngineError as e:
+        msg = str(e)
+        assert "worker" in msg and "显式拒绝" in msg
+    else:
+        raise AssertionError("delegated_only 顶层调用必须显式 EngineError")
+    assert not spawned, "CLI 子进程不得启动（不发明无效旗标）"

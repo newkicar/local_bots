@@ -7,8 +7,8 @@
 
 **Blocked by:** 08
 
-**Status:** open
+**Status:** done
 
-- [ ] capabilities + 调用模式守卫
-- [ ] delegated_only 顶层调用显式失败测试
-- [ ] 回归 + 提交
+- [x] capabilities + 调用模式守卫
+- [x] delegated_only 顶层调用显式失败测试
+- [x] 回归 + 提交

@@ -47,6 +47,42 @@ class CodexAdapter(EngineAdapter):
         self._cli = cli
         self._spawn = spawn  # 注入后跳过 shutil.which 检查（可测试）
 
+    def capabilities(self) -> dict[str, Any]:
+        """能力面如实上报（票 10）：codex exec CLI 只能以默认 profile 顶层启动。
+
+        - agent_discovery=True：user 级发现来源 $CODEX_HOME/agents/*.toml（票 04 reader）；
+        - default profile = direct（CLI 顶层启动）；worker/explorer/自定义 =
+          delegated_only（只能在会话内经 agent 委派调用；CLI 没有 --agent 旗标，
+          本适配器也不读 ~/.codex/config.toml 发明调用路径）；
+        - delegated_only agent 被当顶层执行 → 显式 EngineError，绝不静默回退 default。
+        """
+        return {
+            "agent_discovery": True,
+            "direct_profile_invocation": "default_only",
+            "invocation_modes": {
+                "default": "direct",
+                "worker": "delegated_only",
+                "explorer": "delegated_only",
+                "custom": "delegated_only",
+            },
+            "non_default_profile_policy": "explicit_failure",
+        }
+
+    @staticmethod
+    def _check_profile(task: dict[str, Any]) -> None:
+        """票 10：显式请求非默认 profile → delegated_only，不可顶层启动。
+
+        不发明 --agent 旗标、不读 ~/.codex/config.toml；显式 EngineError，
+        绝不静默回退 default。旧路径（None / "default"）行为不变。
+        """
+        pid = task.get("engine_profile_id")
+        if pid and pid != "default":
+            raise EngineError(
+                f"codex 非默认 profile {pid!r} 为 delegated_only"
+                "（能力面 direct_profile_invocation=default_only）：只能会话内委派调用，"
+                "CLI 不可顶层启动；显式拒绝，不发明调用旗标"
+            )
+
     # ---------- EngineAdapter ----------
     async def ensure_thread(self, task: dict[str, Any], run: dict[str, Any],
                             hooks: RunHooks) -> str | None:
@@ -56,6 +92,7 @@ class CodexAdapter(EngineAdapter):
 
     async def execute(self, task: dict[str, Any], run: dict[str, Any], thread: str | None,
                       hooks: RunHooks, *, resume_note: str | None = None) -> str:
+        self._check_profile(task)
         ws = task.get("workspace")
         if not ws or not os.path.isdir(ws):
             raise EngineError(f"workspace 缺席或不是目录：{ws!r}")
