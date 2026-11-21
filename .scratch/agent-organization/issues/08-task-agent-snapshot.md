@@ -10,8 +10,8 @@ agent 不可用/待审/禁用→拒绝创建。
 
 **Blocked by:** 02
 
-**Status:** open
+**Status:** done
 
-- [ ] 迁移 + create_task/SELECT 全链路列扩展
-- [ ] 快照冻结 + 422/拒绝规则
-- [ ] 旧库升级 + 回归测试并提交
+- [x] 迁移 + create_task/SELECT 全链路列扩展
+- [x] 快照冻结 + 422/拒绝规则
+- [x] 旧库升级 + 回归测试并提交

@@ -24,6 +24,12 @@ import aiosqlite
 TASK_TERMINAL_STATES = {"reported", "failed", "cancelled", "rejected"}
 TASK_ACTIVE_STATES = {"queued", "running", "waiting-approval", "interrupted"}
 
+# 票 08：任务/Run 的 Agent 身份 + 快照（add-only 列，旧行 NULL 按旧 engine 语义解读）
+AGENT_TASK_COLUMNS = (
+    "agent_id", "engine_profile_id", "engine_profile_version", "engine_profile_hash",
+    "agent_snapshot_json", "project_id",
+)
+
 TASK_TRANSITIONS: dict[str, set[str]] = {
     "queued": {"running", "cancelled", "failed", "waiting-approval", "interrupted"},
     "running": {"completed", "failed", "cancelled", "rejected", "interrupted", "waiting-approval"},
@@ -62,7 +68,13 @@ CREATE TABLE IF NOT EXISTS tasks(
     error TEXT,
     reject_reason TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    agent_id TEXT,
+    engine_profile_id TEXT,
+    engine_profile_version TEXT,
+    engine_profile_hash TEXT,
+    agent_snapshot_json TEXT,
+    project_id TEXT
 );
 CREATE TABLE IF NOT EXISTS runs(
     run_id TEXT PRIMARY KEY,
@@ -126,6 +138,15 @@ class TaskManager:
                 "ALTER TABLE tasks ADD COLUMN writes_authorized INTEGER NOT NULL DEFAULT 0"
             )
             await self.db.commit()
+        # 票 08：Agent 身份 + 快照列（add-only 幂等迁移）
+        await self._migrate_agent_columns(cols)
+
+    async def _migrate_agent_columns(self, cols: set[str]) -> None:
+        """幂等补齐 6 个 agent 列（旧库升级安全；新库建表已含）。"""
+        for col in AGENT_TASK_COLUMNS:
+            if col not in cols:
+                await self.db.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")
+                await self.db.commit()
 
     @property
     def db(self) -> aiosqlite.Connection:
@@ -151,16 +172,28 @@ class TaskManager:
         workspace: str | None = None,
         parent_task_id: str | None = None,
         writes_authorized: bool = False,
+        agent_id: str | None = None,
+        project_id: str | None = None,
+        engine_profile_id: str | None = None,
+        engine_profile_version: str | None = None,
+        engine_profile_hash: str | None = None,
+        agent_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         task_id = "T" + uuid.uuid4().hex[:12]
         ts = _now()
         run_id = "R" + uuid.uuid4().hex[:12]
+        snapshot_json = (
+            json.dumps(agent_snapshot, ensure_ascii=False) if agent_snapshot is not None else None
+        )
         async with self.db.execute(
             "INSERT INTO tasks(task_id, seq, engine, workspace, writes_authorized, status, "
-            "parent_task_id, instruction, created_at, updated_at) "
-            "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM tasks), ?, ?, ?, 'queued', ?, ?, ?, ?)",
+            "parent_task_id, instruction, created_at, updated_at, agent_id, project_id, "
+            "engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json) "
+            "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM tasks), ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task_id, engine, workspace, 1 if writes_authorized else 0,
-             parent_task_id, instruction, ts, ts),
+             parent_task_id, instruction, ts, ts,
+             agent_id, project_id, engine_profile_id, engine_profile_version,
+             engine_profile_hash, snapshot_json),
         ):
             pass
         await self._insert_run(run_id, task_id, 1, "queued", origin="submitted")
@@ -173,7 +206,7 @@ class TaskManager:
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         async with self.db.execute(
             "SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, "
-            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at "
+            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id "
             "FROM tasks WHERE task_id=?",
             (task_id,),
         ) as cur:
@@ -188,7 +221,7 @@ class TaskManager:
     async def list_tasks(self) -> list[dict[str, Any]]:
         async with self.db.execute(
             "SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, "
-            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at "
+            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id "
             "FROM tasks ORDER BY seq DESC"
         ) as cur:
             rows = await cur.fetchall()
@@ -201,9 +234,12 @@ class TaskManager:
     def _task_row(row: tuple) -> dict[str, Any]:
         cols = ("task_id", "seq", "engine", "engine_thread_id", "workspace", "writes_authorized",
                 "status", "parent_task_id", "instruction", "result", "error", "reject_reason",
-                "created_at", "updated_at")
+                "created_at", "updated_at", "agent_id", "engine_profile_id",
+                "engine_profile_version", "engine_profile_hash", "agent_snapshot_json", "project_id")
         d = dict(zip(cols, row))
         d["writes_authorized"] = bool(d["writes_authorized"])
+        raw_snapshot = d.pop("agent_snapshot_json")
+        d["agent_snapshot"] = json.loads(raw_snapshot) if raw_snapshot else None
         return d
 
     async def _insert_run(self, run_id: str, task_id: str, attempt: int, state: str, *,
@@ -386,7 +422,7 @@ class TaskManager:
         ph = ",".join("?" for _ in states)
         async with self.db.execute(
             f"SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, parent_task_id, "
-            f"instruction, result, error, reject_reason, created_at, updated_at FROM tasks "
+            f"instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id FROM tasks "
             f"WHERE status IN ({ph}) ORDER BY seq",
             states,
         ) as cur:

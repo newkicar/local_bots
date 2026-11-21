@@ -161,7 +161,17 @@ def test_failing_engine_marks_task_failed():
         t = _wait_terminal(c, t["task_id"], want=("failed",))
         assert t["status"] == "failed"
         assert t["runs"][0]["state"] == "failed" and t["runs"][0]["error"]
-        kinds = [n["kind"] for n in t["notifications"]]
+        # 竞态说明：dispatcher._fail 先迁移任务为 failed，再落通知行；
+        # 终态可见时通知可能尚未入库（重载下轮询会掉进该窗口，测试偶发失败），
+        # 因此终态到达后对通知做有界等待。
+        kinds: list = []
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            t = c.get(f"/api/tasks/{t['task_id']}", headers=_headers()).json()
+            kinds = [n["kind"] for n in t["notifications"]]
+            if "task_failed" in kinds:
+                break
+            time.sleep(0.05)
         assert "task_failed" in kinds
 
 
