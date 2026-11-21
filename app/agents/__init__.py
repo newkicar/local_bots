@@ -11,6 +11,12 @@ from app.agents.catalog import (
     AgentCatalog,
     InvalidAgentTransition,
 )
+from app.agents.discovery import (
+    AgentDiscoveryService,
+    DiscoveryResult,
+    JarvisDiscoveryProvider,
+    build_default_discovery,
+)
 
 __all__ = [
     "AGENT_STATUSES",
@@ -19,4 +25,8 @@ __all__ = [
     "PROJECT_TRUST_STATES",
     "AgentCatalog",
     "InvalidAgentTransition",
-]
+    "AgentDiscoveryService",
+    "DiscoveryResult",
+    "JarvisDiscoveryProvider",
+    "build_default_discovery",
+]

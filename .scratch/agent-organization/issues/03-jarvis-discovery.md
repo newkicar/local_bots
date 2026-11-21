@@ -8,8 +8,8 @@ provider 返回 discovery_unsupported + 记录最小 API 诉求，catalog 保留
 
 **Blocked by:** 02
 
-**Status:** open
+**Status:** done
 
-- [ ] AgentDiscoveryService + 注册表 + 默认 []
-- [ ] Jarvis provider（unsupported 如实上报）
-- [ ] 测试（含 FakeEngine 兼容）并提交
+- [x] AgentDiscoveryService + 注册表 + 默认 []
+- [x] Jarvis provider（unsupported 如实上报）
+- [x] 测试（含 FakeEngine 兼容）并提交

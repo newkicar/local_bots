@@ -75,3 +75,11 @@ class EngineAdapter(abc.ABC):
         返回 {"safe": bool, "result": str|None（已知最终结果）, "detail": str}。
         默认无法确认 → 不安全（转 waiting-approval 请用户核实，绝不盲目重试）。"""
         return {"safe": False, "result": None, "detail": "adapter 未实现 reconcile"}
+
+    async def discover_agents(self, scope: str = "user") -> list[dict[str, Any]]:
+        """可选（票 03 发现框架）：枚举本引擎可暴露的 agent/profile 元数据描述符。
+
+        基类安全默认 []（FakeEngine 及无 profile API 的引擎保持默认，
+        tests/fakes.py 不动）；discovery provider 可调用本方法，或直接读
+        引擎自己的来源（如票 04 codex 读 $CODEX_HOME/agents）。"""
+        return []
