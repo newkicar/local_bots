@@ -23,6 +23,8 @@ from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
 from app.agents.catalog import AgentCatalog, InvalidAgentTransition
+from app.agents.project_trust import ProjectTrustService
+from app.agents.router import AgentRouter, RoutingError, freeze_snapshot
 from app.agents.sync import AgentSyncOrchestrator, VALID_SYNC_SCOPES
 from app.approval import ApprovalGate
 from app.auto_approve import MODES, AutoApprover
@@ -102,49 +104,6 @@ def _default_engines(settings: Settings) -> dict[str, EngineAdapter]:
     }
 
 
-async def _validate_task_agent(catalog, *, agent_id: str,
-                                 engine: str | None, project_id: str | None) -> tuple[dict[str, Any], str]:
-    """票 08：SubmitTask 显式 agent 的服务端校验（存在 / available / 引擎与项目匹配）。
-
-    返回 (agent 合并行, 生效 engine)；任一规则不符 → 422（绝不静默回退默认 engine）。
-    """
-    agent = await catalog.get_agent(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=422, detail=f"agent not found: {agent_id}")
-    if agent.get("effective_status") != "available":
-        raise HTTPException(
-            status_code=422,
-            detail=f"agent {agent_id} 不可用（effective_status={agent.get('effective_status')!r}）",
-        )
-    if engine is not None and engine != agent["engine"]:
-        raise HTTPException(
-            status_code=422,
-            detail=f"agent {agent_id} 属于 {agent['engine']!r} 引擎，与请求 engine={engine!r} 不匹配",
-        )
-    agent_pid = (agent.get("metadata") or {}).get("project_id")
-    if project_id is not None and agent_pid is not None and project_id != agent_pid:
-        raise HTTPException(
-            status_code=422,
-            detail=f"agent {agent_id} 属于项目 {agent_pid!r}，与请求 project_id={project_id!r} 不匹配",
-        )
-    return agent, agent["engine"]
-
-
-def _freeze_agent_snapshot(agent: dict[str, Any]) -> dict[str, Any]:
-    """票 08：任务创建即冻结 agent 当时 descriptor + hash（短、可审计、无隐藏链）。"""
-    return {
-        "agent_id": agent["agent_id"],
-        "engine": agent["engine"],
-        "engine_profile_id": agent["engine_profile_id"],
-        "engine_profile_version": agent.get("profile_version"),
-        "engine_profile_hash": agent.get("profile_hash"),
-        "name": agent.get("name"),
-        "invocation_mode": agent.get("invocation_mode"),
-        "source_scope": agent.get("source_scope"),
-        "effective_status": agent.get("effective_status"),
-    }
-
-
 def create_app(
     settings: Settings | None = None,
     engines: dict[str, EngineAdapter] | None = None,
@@ -169,10 +128,16 @@ def create_app(
         await handle_task_event(event, tm, conv_store, hub)
 
     tm = TaskManager(settings.tasks_db_path, notify=_notify)
-    catalog = AgentCatalog(settings.tasks_db_path)
+    catalog = AgentCatalog(settings.tasks_db_path,
+                           auto_enable_user_profiles=settings.ld_agent_auto_enable_user_profiles,
+                           auto_enable_project_profiles=settings.ld_agent_auto_enable_project_profiles)
     memory = MemoryStore(settings.memory_path)
     bl = Blacklist(settings.blacklist_path)
     resolved_engines = _default_engines(settings) if engines is None else engines
+    trust = ProjectTrustService(catalog, trust_required=settings.ld_project_trust_required)
+    router = AgentRouter(catalog, trust, available_engines=set(resolved_engines),
+                         routing_mode=settings.ld_agent_routing_mode,
+                         catalog_enabled=settings.ld_agent_catalog_enabled)
     dispatcher = Dispatcher(
         tm,
         resolved_engines,
@@ -192,7 +157,7 @@ def create_app(
         sec = (
             secretary_factory(tm, dispatcher, settings)
             if secretary_factory is not None
-            else Secretary(tm, dispatcher, settings, memory=memory)
+            else Secretary(tm, dispatcher, settings, memory=memory, router=router)
         )
 
     @asynccontextmanager
@@ -235,6 +200,8 @@ def create_app(
     app.state.conv_store = conv_store
     app.state.memory = memory
     app.state.catalog = catalog
+    app.state.router = router
+    app.state.trust = trust
     app.state._bg_tasks: set[asyncio.Task] = set()
 
     async def _auth(request: Request) -> None:
@@ -251,38 +218,28 @@ def create_app(
 
     @app.post("/api/tasks", status_code=201, dependencies=[auth])
     async def submit_task(body: SubmitTask) -> dict[str, Any]:
-        agent, engine = None, body.engine
-        snapshot: dict[str, Any] | None = None
-        if body.agent_id:
-            agent, engine = await _validate_task_agent(
-                catalog, agent_id=body.agent_id, engine=body.engine, project_id=body.project_id
-            )
-            snapshot = _freeze_agent_snapshot(agent)
-        profile_id = agent["engine_profile_id"] if agent else None
+        try:
+            decision = await router.resolve(agent_id=body.agent_id, engine=body.engine, project_id=body.project_id)
+        except RoutingError as exc:
+            raise HTTPException(status_code=422, detail=exc.full_detail)
+        selected = decision["selected_agent_id"]
+        agent = await router.agent_row(selected) if selected else None
+        snapshot = freeze_snapshot(agent) if agent else None
+        profile_id = decision["engine_profile_id"]
         profile_ver = agent.get("profile_version") if agent else None
         profile_hash = agent.get("profile_hash") if agent else None
-        task_project_id = body.project_id
-        if agent is not None:
-            task_project_id = body.project_id or (agent.get("metadata") or {}).get("project_id")
-        task = await tm.create_task(
-            instruction=body.instruction,
-            engine=engine or "jarvis",
-            workspace=body.workspace,
-            parent_task_id=body.parent_task_id,
-            writes_authorized=body.writes_authorized,
-            agent_id=body.agent_id,
-            project_id=task_project_id,
-            engine_profile_id=profile_id,
-            engine_profile_version=profile_ver,
-            engine_profile_hash=profile_hash,
-            agent_snapshot=snapshot,
-        )
+        task_project_id = body.project_id or ((agent.get("metadata") or {}).get("project_id") if agent else None)
+        task = await tm.create_task(instruction=body.instruction, engine=decision["engine"] or "jarvis",
+            workspace=body.workspace, parent_task_id=body.parent_task_id, writes_authorized=body.writes_authorized,
+            agent_id=selected, project_id=task_project_id, engine_profile_id=profile_id,
+            engine_profile_version=profile_ver, engine_profile_hash=profile_hash, agent_snapshot=snapshot)
         if task["workspace"] is None:
             ws = settings.ld_workspace_dir / task["task_id"]
             ws.mkdir(parents=True, exist_ok=True)
             await tm.set_task_workspace(task["task_id"], str(ws))
-            task["workspace"] = str(ws)
-        return task
+        await tm.transition_task(task["task_id"], "queued", from_states={"queued"},
+                                 routing_decision_json=json.dumps(decision, ensure_ascii=False))
+        return await tm.get_task(task["task_id"])
 
     @app.get("/api/tasks", dependencies=[auth])
     async def list_tasks() -> list[dict[str, Any]]:

@@ -12,8 +12,8 @@ AUTO_ENABLE_PROJECT_PROFILES/PROJECT_TRUST_REQUIRED）。§21 十条验收清单
 
 **Blocked by:** 07, 09, 10
 
-**Status:** open
+**Status:** done
 
-- [ ] router + 校验 + 路由 JSON 落库
-- [ ] settings/.env.example 6 项
-- [ ] 端到端回归全绿并提交
+- [x] router + 校验 + 路由 JSON 落库
+- [x] settings/.env.example 6 项
+- [x] 端到端回归全绿并提交

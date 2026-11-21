@@ -27,7 +27,7 @@ TASK_ACTIVE_STATES = {"queued", "running", "waiting-approval", "interrupted"}
 # 票 08：任务/Run 的 Agent 身份 + 快照（add-only 列，旧行 NULL 按旧 engine 语义解读）
 AGENT_TASK_COLUMNS = (
     "agent_id", "engine_profile_id", "engine_profile_version", "engine_profile_hash",
-    "agent_snapshot_json", "project_id",
+    "agent_snapshot_json", "project_id", "routing_decision_json",
 )
 
 TASK_TRANSITIONS: dict[str, set[str]] = {
@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS tasks(
     engine_profile_version TEXT,
     engine_profile_hash TEXT,
     agent_snapshot_json TEXT,
-    project_id TEXT
+    project_id TEXT,
+    routing_decision_json TEXT
 );
 CREATE TABLE IF NOT EXISTS runs(
     run_id TEXT PRIMARY KEY,
@@ -206,7 +207,7 @@ class TaskManager:
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         async with self.db.execute(
             "SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, "
-            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id "
+            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id, routing_decision_json "
             "FROM tasks WHERE task_id=?",
             (task_id,),
         ) as cur:
@@ -221,7 +222,7 @@ class TaskManager:
     async def list_tasks(self) -> list[dict[str, Any]]:
         async with self.db.execute(
             "SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, "
-            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id "
+            "parent_task_id, instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id, routing_decision_json "
             "FROM tasks ORDER BY seq DESC"
         ) as cur:
             rows = await cur.fetchall()
@@ -235,11 +236,14 @@ class TaskManager:
         cols = ("task_id", "seq", "engine", "engine_thread_id", "workspace", "writes_authorized",
                 "status", "parent_task_id", "instruction", "result", "error", "reject_reason",
                 "created_at", "updated_at", "agent_id", "engine_profile_id",
-                "engine_profile_version", "engine_profile_hash", "agent_snapshot_json", "project_id")
+                "engine_profile_version", "engine_profile_hash", "agent_snapshot_json", "project_id",
+                "routing_decision_json")
         d = dict(zip(cols, row))
         d["writes_authorized"] = bool(d["writes_authorized"])
         raw_snapshot = d.pop("agent_snapshot_json")
         d["agent_snapshot"] = json.loads(raw_snapshot) if raw_snapshot else None
+        raw_routing = d.pop("routing_decision_json")
+        d["routing_decision"] = json.loads(raw_routing) if raw_routing else None
         return d
 
     async def _insert_run(self, run_id: str, task_id: str, attempt: int, state: str, *,
@@ -422,7 +426,7 @@ class TaskManager:
         ph = ",".join("?" for _ in states)
         async with self.db.execute(
             f"SELECT task_id, seq, engine, engine_thread_id, workspace, writes_authorized, status, parent_task_id, "
-            f"instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id FROM tasks "
+            f"instruction, result, error, reject_reason, created_at, updated_at, agent_id, engine_profile_id, engine_profile_version, engine_profile_hash, agent_snapshot_json, project_id, routing_decision_json FROM tasks "
             f"WHERE status IN ({ph}) ORDER BY seq",
             states,
         ) as cur:

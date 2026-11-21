@@ -22,6 +22,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
+from app.agents.router import AgentRouter, RoutingError, freeze_snapshot
 from app.dispatcher import Dispatcher
 from app.settings import Settings
 from app.memory import MemoryStore
@@ -100,10 +101,12 @@ class Secretary:
         model: BaseChatModel | None = None,
         caps: dict[str, Any] | None = None,
         memory: "MemoryStore | None" = None,
+        router: AgentRouter | None = None,
     ) -> None:
         self._tm = tm
         self._dispatcher = dispatcher
         self._memory = memory
+        self._router = router
         self._settings = settings
         self._caps = {**DEFAULT_CAPS, **(caps or {})}
         self._model = model
@@ -233,18 +236,39 @@ class Secretary:
         writes_authorized: bool,
         *,
         session: bool,
+        agent_id: str | None = None,
     ) -> str:
         eng = (engine or "jarvis").strip().lower()
         if eng not in self._engine_names:
             return _jerr(f"未知引擎: {engine!r}；可用: {sorted(self._engine_names)}")
+        if agent_id is not None and self._router is None:
+            return _jerr("agent 路由未接线（router 未接线），拒绝显式 agent 提交")
+        decision: dict[str, Any] | None = None
+        selected: str | None = None
+        agent_row: dict[str, Any] | None = None
+        task_engine = eng
+        if agent_id is not None:
+            try:
+                decision = await self._router.resolve(agent_id=agent_id, engine=engine)
+            except RoutingError as exc:
+                return _jerr(f"agent 校验失败: {exc.full_detail}")
+            selected = decision["selected_agent_id"]
+            agent_row = await self._router.agent_row(selected) if selected else None
+            task_engine = decision["engine"] if selected else eng
         if workspace is not None and not os.path.isdir(os.path.normcase(str(workspace))):
             return _jerr(f"workspace 不存在或不是目录: {workspace}")
         try:
             task = await self._tm.create_task(
                 instruction=instruction,
-                engine=eng,
+                engine=task_engine,
                 workspace=workspace,
                 writes_authorized=writes_authorized,
+                agent_id=selected,
+                project_id=((agent_row.get("metadata") or {}).get("project_id") if agent_row else None),
+                engine_profile_id=decision["engine_profile_id"] if decision else None,
+                engine_profile_version=agent_row.get("profile_version") if agent_row else None,
+                engine_profile_hash=agent_row.get("profile_hash") if agent_row else None,
+                agent_snapshot=freeze_snapshot(agent_row) if agent_row else None,
             )
         except Exception as exc:  # 工具永不向 LLM 抛异常
             return _jerr(f"任务创建失败: {exc}")
@@ -253,6 +277,11 @@ class Secretary:
             auto.mkdir(parents=True, exist_ok=True)
             await self._tm.set_task_workspace(task["task_id"], str(auto))
             task["workspace"] = str(auto)
+        if decision is not None:
+            await self._tm.transition_task(
+                task["task_id"], "queued", from_states={"queued"},
+                routing_decision_json=json.dumps(decision, ensure_ascii=False),
+            )
         hint = (
             "会话已建立；后续用 followup_task(task_id) 在同一 Thread 追问；本轮不等待执行完成。"
             if session
@@ -431,13 +460,15 @@ class Secretary:
             engine: str | None = None,
             workspace: str | None = None,
             writes_authorized: bool = False,
+            agent_id: str | None = None,
         ) -> str:
             """创建一次性后台任务并立即返回（不等待完成）。
             instruction：任务指令（自然语言）。engine："jarvis"（缺省）或 "codex"（仅当用户明说用 Codex）。
             workspace：任务工作目录（必须是已存在的目录；省略则自动建隔离目录）。
             writes_authorized：任务是否被授权写文件（默认 False，保守）。
+            agent_id：可选；显式指定 agent（服务端统一校验；省略时按 engine 路由）。
             """
-            return await self._submit(instruction, engine, workspace, writes_authorized, session=False)
+            return await self._submit(instruction, engine, workspace, writes_authorized, session=False, agent_id=agent_id)
 
         @tool
         async def start_agent_session(
@@ -445,12 +476,13 @@ class Secretary:
             engine: str | None = None,
             workspace: str | None = None,
             writes_authorized: bool = False,
+            agent_id: str | None = None,
         ) -> str:
             """开启一个长期 Agent 会话（绑定引擎 + 工作目录；后续追问复用同一 Thread）。
             当用户希望就某事持续追问引擎时使用；之后用 followup_task(task_id) 在同 Thread 内追问。
             参数与 submit_task 相同。
             """
-            return await self._submit(instruction, engine, workspace, writes_authorized, session=True)
+            return await self._submit(instruction, engine, workspace, writes_authorized, session=True, agent_id=agent_id)
 
         @tool
         async def list_tasks(status: str | None = None, limit: int | None = None) -> str:

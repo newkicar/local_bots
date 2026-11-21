@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     # 票 07：agent 启动 sync 开关（默认开；sync 失败不阻断启动，仅记日志）
     ld_agent_sync_on_startup: bool = True
 
+    # 票 11：agent 路由与信任配置
+    ld_agent_catalog_enabled: bool = True
+    ld_agent_routing_mode: Literal["explicit"] = "explicit"
+    ld_agent_auto_enable_user_profiles: bool = False
+    ld_agent_auto_enable_project_profiles: bool = False
+    ld_project_trust_required: bool = True
+
     @property
     def tasks_db_path(self) -> Path:
         return self.ld_data_dir / "tasks.db"

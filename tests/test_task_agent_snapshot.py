@@ -137,7 +137,7 @@ async def test_create_task_freezes_snapshot_fields():
 
 def test_submit_task_agent_validation():
     settings = _settings("p08_api")
-    with TestClient(create_app(settings, {"fake": FakeEngine()})) as c:
+    with TestClient(create_app(settings, {"fake": FakeEngine(), "codex": FakeEngine(), "jarvis": FakeEngine()})) as c:
         cat = c.app.state.catalog
 
         # 未知 agent → 422
@@ -186,7 +186,7 @@ def test_submit_task_agent_validation():
 
 def test_submit_task_project_agent_binding():
     settings = _settings("p08_proj")
-    with TestClient(create_app(settings, {"fake": FakeEngine()})) as c:
+    with TestClient(create_app(settings, {"fake": FakeEngine(), "codex": FakeEngine(), "jarvis": FakeEngine()})) as c:
         cat = c.app.state.catalog
         import pathlib
 
@@ -201,6 +201,7 @@ def test_submit_task_project_agent_binding():
             "name": "Beta", "source_scope": "project", "source_id": f"{pid}:beta",
             "metadata": {"project_id": pid}, "profile_hash": "hP"})
         c.portal.call(cat.transition_agent, aid, "available")
+        c.portal.call(c.app.state.trust.trust_project, pid)
 
         # project_id 匹配（显式）→ 201
         r = c.post("/api/tasks", json={"instruction": "x", "agent_id": aid, "project_id": pid},
