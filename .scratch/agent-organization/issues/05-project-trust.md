@@ -8,8 +8,8 @@ Windows 大小写折叠），拒绝 symlink 逃逸/`..`/盘符切换/UNC；Proje
 
 **Blocked by:** 02
 
-**Status:** open
+**Status:** done
 
-- [ ] 项目登记/规范化/逃逸校验
-- [ ] 信任状态迁移（pending→trusted→revoked）
-- [ ] 测试（含逃逸向量）并提交
+- [x] 项目登记/规范化/逃逸校验
+- [x] 信任状态迁移（pending→trusted→revoked）
+- [x] 测试（含逃逸向量）并提交
