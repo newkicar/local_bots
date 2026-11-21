@@ -349,6 +349,7 @@ def create_app(
     async def delete_conversation(conversation_id: str) -> None:
         if not await conv_store.delete(conversation_id):
             raise HTTPException(status_code=404, detail="conversation not found")
+        await hub.publish({"type": "conversation_deleted", "conversation_id": conversation_id})
 
     @app.get("/api/memory", dependencies=[auth])
     async def list_memory() -> dict[str, list[dict[str, str]]]:

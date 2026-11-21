@@ -171,6 +171,10 @@ function connectSSE() {
     }
     if (ev.type === "notification") chatTaskNotice(ev);
     if (ev.type === "conversation_updated") { loadConversations(); reloadConversationMessages(ev.conversation_id); }
+    if (ev.type === "conversation_deleted") {
+      if (state.activeConv === ev.conversation_id) newConversation();
+      else loadConversations();
+    }
   };
   state.es = es;
 }
@@ -188,7 +192,7 @@ function setConn(ok) {
      ③ 页面前台返回 / 亮屏唤醒时立即补齐。 ---------- */
 const POLL_MS = 10000;
 let pollTimer = null;
-function catchUp() { refreshAll(); }
+function catchUp() { refreshAll(); loadConversations(); }
 function startPolling() {
   if (pollTimer) return;
   pollTimer = setInterval(() => {
@@ -384,6 +388,10 @@ async function loadConversations() {
   let rows;
   try { rows = await api("/api/conversations"); } catch { return; }
   if (!Array.isArray(rows)) rows = [];
+  if (state.activeConv && !rows.some((r) => r.conversation_id === state.activeConv)) {
+    newConversation(); /* 当前激活对话已在其他端/离线窗口被删除：清面板并重新拉取 */
+    return;
+  }
   const box = H("conv-list");
   if (!box) return;
   box.innerHTML = "";
