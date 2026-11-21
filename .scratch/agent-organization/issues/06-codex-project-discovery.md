@@ -6,8 +6,8 @@ codex:project:<project_id>:<name>；撤销项目信任→该项目 agent 转 sta
 
 **Blocked by:** 04, 05
 
-**Status:** open
+**Status:** done
 
-- [ ] 项目级读取 + 信任门控
-- [ ] 撤销信任→stale 测试
-- [ ] 提交
+- [x] 项目级读取 + 信任门控
+- [x] 撤销信任→stale 测试
+- [x] 提交

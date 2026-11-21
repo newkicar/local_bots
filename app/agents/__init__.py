@@ -11,7 +11,11 @@ from app.agents.catalog import (
     AgentCatalog,
     InvalidAgentTransition,
 )
-from app.agents.codex_discovery import CodexUserDiscoveryProvider
+from app.agents.codex_discovery import (
+    CodexProjectDiscoveryProvider,
+    CodexUserDiscoveryProvider,
+    build_codex_discovery,
+)
 from app.agents.project_trust import (
     ProjectTrustError,
     ProjectTrustService,
@@ -35,6 +39,8 @@ __all__ = [
     "JarvisDiscoveryProvider",
     "build_default_discovery",
     "CodexUserDiscoveryProvider",
+    "CodexProjectDiscoveryProvider",
+    "build_codex_discovery",
     "ProjectTrustError",
     "ProjectTrustService",
 ]

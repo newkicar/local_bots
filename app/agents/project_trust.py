@@ -107,8 +107,14 @@ class ProjectTrustService:
         return await self._transition(project_id, "trusted")
 
     async def revoke_project(self, project_id: str) -> dict[str, Any]:
-        """pending/trusted → revoked（终态；只挡新任务，历史行保留）。"""
-        return await self._transition(project_id, "revoked")
+        """pending/trusted → revoked（终态；只挡新任务，历史行保留）。
+
+        同时把该项目 project-scope agent 降 stale（票 06：撤销信任→stale，不删行）。
+        返回 dict 附 demoted_agents 列表。
+        """
+        project = await self._transition(project_id, "revoked")
+        project["demoted_agents"] = await self._catalog.demote_project_agents(project_id)
+        return project
 
     async def _transition(self, project_id: str, to: str) -> dict[str, Any]:
         project = await self._catalog.get_project(project_id)

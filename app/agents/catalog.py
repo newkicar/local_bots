@@ -414,6 +414,28 @@ class AgentCatalog:
             out.append(d)
         return out
 
+    # ---------- 项目信任撤销 → agent 降级（票 06；永不删行） ----------
+    async def demote_project_agents(self, project_id: str) -> list[dict[str, Any]]:
+        """项目信任被撤销：该项目 project-scope agent 降状态，历史行保留（§4）。
+
+        available/pending_review/disabled → stale；discovered → unavailable；
+        unavailable/rejected 原样保留。按 metadata 中的 project_id 精确匹配。
+        """
+        rows = await (await self.db.execute(
+            "SELECT agent_id FROM agent_catalog WHERE source_scope=? AND metadata LIKE ?",
+            ("project", f'%"project_id": "{project_id}"%'),
+        )).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            aid = r["agent_id"]
+            got = await self.get_agent(aid)
+            prev = got["discovery_status"]
+            if prev in ("available", "pending_review", "disabled"):
+                out.append(await self.transition_agent(aid, "stale"))
+            elif prev == "discovered":
+                out.append(await self.transition_agent(aid, "unavailable"))
+        return out
+
     # ---------- 项目登记（信任状态机见 app/agents/project_trust.py，票 05） ----------
     async def register_project(self, name: str, root_path: str) -> dict[str, Any]:
         pid = f"P{uuid.uuid4().hex[:12]}"
