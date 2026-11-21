@@ -54,6 +54,33 @@ class JarvisAdapter(EngineAdapter):
 
         return create_jarvis(workspace, checkpointer)
 
+    def capabilities(self) -> dict[str, Any]:
+        """能力面如实上报（票 09）：Jarvis 仅一个公开入口 create_jarvis(workspace, checkpointer)。
+
+        - agent_discovery=False：无 user 级 agent/profile 发现来源（ticket 03 provider
+          仅能生成 jarvis:default 一条 builtin 描述符，非真实发现面）；
+        - direct_profile_invocation=False：不存在按 engine_profile_id 具名启动 profile
+          的 API；非默认 profile 请求在 execute 显式 EngineError，绝不静默回退 default。
+        """
+        return {
+            "agent_discovery": False,
+            "direct_profile_invocation": False,
+            "non_default_profile_policy": "explicit_failure",
+        }
+
+    @staticmethod
+    def _check_profile(task: dict[str, Any]) -> None:
+        """票 09：显式请求非默认 jarvis profile → 显式 EngineError（绝不静默回退 default）。
+
+        旧路径（engine_profile_id 为 None 或 "default"）不触发，行为字节级不变。
+        """
+        pid = task.get("engine_profile_id")
+        if pid and pid != "default":
+            raise EngineError(
+                f"jarvis 不支持非默认 profile {pid!r}"
+                "（能力面 direct_profile_invocation=False）；显式拒绝执行，不静默回退默认 profile"
+            )
+
     # ---------- EngineAdapter 实现 ----------
     async def ensure_thread(
         self, task: dict[str, Any], run: dict[str, Any], hooks: RunHooks
@@ -71,6 +98,7 @@ class JarvisAdapter(EngineAdapter):
         *,
         resume_note: str | None = None,
     ) -> str:
+        self._check_profile(task)
         ws = task.get("workspace")
         if not ws or not os.path.isdir(ws):
             raise EngineError(f"jarvis workspace 不可用: {ws}")

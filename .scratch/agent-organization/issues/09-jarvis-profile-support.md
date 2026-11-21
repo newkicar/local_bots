@@ -7,8 +7,8 @@ jarvis profile（engine_profile_id != "default"）→显式 EngineError（绝不
 
 **Blocked by:** 08
 
-**Status:** open
+**Status:** done
 
-- [ ] capabilities 默认 + jarvis 如实 JSON
-- [ ] 非默认 profile 显式失败测试
-- [ ] 回归 + 提交
+- [x] capabilities 默认 + jarvis 如实 JSON
+- [x] 非默认 profile 显式失败测试
+- [x] 回归 + 提交

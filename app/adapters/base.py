@@ -76,10 +76,23 @@ class EngineAdapter(abc.ABC):
         默认无法确认 → 不安全（转 waiting-approval 请用户核实，绝不盲目重试）。"""
         return {"safe": False, "result": None, "detail": "adapter 未实现 reconcile"}
 
+    def capabilities(self) -> dict[str, Any]:
+        """引擎能力面（票 09）：子类如实声明自身能力；基类安全默认全为 False。
+
+        - agent_discovery：是否提供 user 级 agent/profile 发现来源（discover_agents）；
+        - direct_profile_invocation：能否按 engine_profile_id 直接以具名 profile
+          启动引擎执行。
+        路由/调用方依此能力面判断显式 profile/agent 请求能否在本引擎执行；
+        无法执行的非默认 profile 必须显式失败（EngineError），绝不静默回退 default。
+        FakeEngine 等无 profile API 的引擎继承基类默认即可，无需改动。
+        """
+        return {"agent_discovery": False, "direct_profile_invocation": False}
+
     async def discover_agents(self, scope: str = "user") -> list[dict[str, Any]]:
         """可选（票 03 发现框架）：枚举本引擎可暴露的 agent/profile 元数据描述符。
 
         基类安全默认 []（FakeEngine 及无 profile API 的引擎保持默认，
         tests/fakes.py 不动）；discovery provider 可调用本方法，或直接读
         引擎自己的来源（如票 04 codex 读 $CODEX_HOME/agents）。"""
-        return []
+        return []
+
