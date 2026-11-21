@@ -13,8 +13,8 @@ direct/delegated_only/default/metadata_only、SQL 逻辑表）、03-implementati
 
 **Blocked by:** 无
 
-**Status:** open
+**Status:** done
 
-- [ ] 5 份审计文档落 docs/agent-organization/
-- [ ] 设计文档入库（git add）
-- [ ] 全量 pytest 保持 100 passed 并提交
+- [x] 5 份审计文档落 docs/agent-organization/
+- [x] 设计文档入库（git add）
+- [x] 全量 pytest 保持 100 passed 并提交

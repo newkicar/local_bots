@@ -12,9 +12,9 @@ app/cli.py 最小 argparse：python -m app.cli agents list|inspect。
 
 **Blocked by:** 01
 
-**Status:** open
+**Status:** done
 
-- [ ] 三表 + projects 表幂等迁移（旧库升级测试）
-- [ ] catalog CRUD/状态迁移守卫（transition）
-- [ ] 内建种子 + API + CLI
-- [ ] 全量 pytest 绿并提交
+- [x] 三表 + projects 表幂等迁移（旧库升级测试）
+- [x] catalog CRUD/状态迁移守卫（transition）
+- [x] 内建种子 + API + CLI
+- [x] 全量 pytest 绿并提交

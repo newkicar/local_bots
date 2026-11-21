@@ -21,6 +21,7 @@ from app.settings import Settings, get_settings
 from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
+from app.agents.catalog import AgentCatalog, InvalidAgentTransition
 from app.approval import ApprovalGate
 from app.auto_approve import MODES, AutoApprover
 from app.dispatcher import Dispatcher
@@ -115,6 +116,7 @@ def create_app(
         await handle_task_event(event, tm, conv_store, hub)
 
     tm = TaskManager(settings.tasks_db_path, notify=_notify)
+    catalog = AgentCatalog(settings.tasks_db_path)
     memory = MemoryStore(settings.memory_path)
     bl = Blacklist(settings.blacklist_path)
     resolved_engines = _default_engines(settings) if engines is None else engines
@@ -143,6 +145,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await tm.open()
+        await catalog.open()
         await conv_store.open()
         # 重启核对（票 04）：以持久化状态为输入，恢复或转等待核实，绝不盲目重试
         await reconcile_on_startup(tm, resolved_engines, dispatcher)
@@ -158,6 +161,7 @@ def create_app(
             await gate.stop()
             await dispatcher.stop()
             await tm.close()
+            await catalog.close()
             await conv_store.close()
 
     app = FastAPI(title="Local Dots V1.0", lifespan=lifespan)
@@ -169,6 +173,7 @@ def create_app(
     app.state.secretary = sec
     app.state.conv_store = conv_store
     app.state.memory = memory
+    app.state.catalog = catalog
     app.state._bg_tasks: set[asyncio.Task] = set()
 
     async def _auth(request: Request) -> None:
@@ -241,6 +246,51 @@ def create_app(
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return run
+
+    # ---------- Agent 目录管理（票 02）：列表 / 审批 / 拒绝 / 启停，挂既有 Bearer 鉴权 ----------
+
+    @app.get("/api/agents", dependencies=[auth])
+    async def list_agents() -> dict[str, Any]:
+        return {"agents": await catalog.list_agents()}
+
+    @app.get("/api/agents/{agent_id}", dependencies=[auth])
+    async def get_agent(agent_id: str) -> dict[str, Any]:
+        agent = await catalog.get_agent(agent_id)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="agent not found")
+        return agent
+
+    @app.post("/api/agents/{agent_id}/approve", dependencies=[auth])
+    async def approve_agent(agent_id: str) -> dict[str, Any]:
+        try:
+            return await catalog.transition_agent(agent_id, "available")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent not found")
+        except InvalidAgentTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/agents/{agent_id}/reject", dependencies=[auth])
+    async def reject_agent(agent_id: str) -> dict[str, Any]:
+        try:
+            return await catalog.reject_agent(agent_id, trust_reject=True)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent not found")
+        except InvalidAgentTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/agents/{agent_id}/enable", dependencies=[auth])
+    async def enable_agent(agent_id: str) -> dict[str, Any]:
+        try:
+            return await catalog.set_override(agent_id, enabled=True)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent not found")
+
+    @app.post("/api/agents/{agent_id}/disable", dependencies=[auth])
+    async def disable_agent(agent_id: str) -> dict[str, Any]:
+        try:
+            return await catalog.set_override(agent_id, enabled=False)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent not found")
 
     @app.get("/api/approvals", dependencies=[auth])
     async def list_approvals() -> list[dict[str, Any]]:
