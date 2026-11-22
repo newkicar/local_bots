@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,19 @@ logger = logging.getLogger(__name__)
 _MATCH_ALL = object()
 
 
+def _canon(p: str) -> str:
+    """平台无关归一化：\ 与 / 统一为分隔符 + normcase + POSIX normpath。
+
+    黑名单/白名单数据是 Windows 风格路径（D:\...），同一数据在 Linux CI 下
+    必须得到与 Windows 一致的匹配结果，故分隔符统一后走 POSIX 归一化。"""
+    return posixpath.normpath(os.path.normcase(p).replace("\\", "/"))
+
+
 def boundary_match(target: str, root: str) -> bool:
-    """normcase+normpath 边界安全前缀：target 等于 root 或是其后代。"""
-    t = os.path.normcase(os.path.normpath(target))
-    r = os.path.normcase(os.path.normpath(root))
-    return t == r or t.startswith(r + os.sep)
+    """边界安全前缀：target 等于 root 或是其后代（分隔符平台无关）。"""
+    t = _canon(target)
+    r = _canon(root)
+    return t == r or t.startswith(r + "/")
 
 
 class Blacklist:
