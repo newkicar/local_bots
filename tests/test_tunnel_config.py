@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import json
+import pytest
+import os
 import re
 from pathlib import Path
 
@@ -81,7 +83,12 @@ def test_app_binding_invariant_unchanged():
 
 
 def test_cloudflared_binary_present_and_gitignored():
-    """实施记录前置：本地 cloudflared.exe 就位，且二进制不入库。"""
-    assert CLOUDFLARED_BIN.is_file(), "cloudflared.exe 应在仓库根（gitignore 之外由本机提供）"
+    """实施记录前置：本地 cloudflared.exe 就位，且二进制不入库。
+
+    二进制仅由本机（Windows）提供，CI（ubuntu runner）无此文件——
+    非 Windows 平台跳过“就位”断言，gitignore 守卫仍须全部平台生效。"""
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "/cloudflared.exe" in gitignore, "cloudflared.exe 必须保持 gitignore（二进制不入库）"
+    if os.name != "nt":
+        pytest.skip("cloudflared.exe 仅在本机 Windows 提供，CI 无此二进制")
+    assert CLOUDFLARED_BIN.is_file(), "cloudflared.exe 应在仓库根（gitignore 之外由本机提供）"

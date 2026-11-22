@@ -27,7 +27,7 @@ _MATCH_ALL = object()
 
 
 def _canon(p: str) -> str:
-    """平台无关归一化：\ 与 / 统一为分隔符 + normcase + POSIX normpath。
+    r"""平台无关归一化：\ 与 / 统一为分隔符 + normcase + POSIX normpath。
 
     黑名单/白名单数据是 Windows 风格路径（D:\...），同一数据在 Linux CI 下
     必须得到与 Windows 一致的匹配结果，故分隔符统一后走 POSIX 归一化。"""
