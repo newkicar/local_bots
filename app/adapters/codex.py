@@ -1,0 +1,263 @@
+"""Codex CLI 子进程适配器（ADR-0002：外部 CLI + JSON 事件流，继承 mimo2codex 网关）。
+
+纪律（AGENTS.md）：
+- 引擎唯一接口 = 本适配器；Dispatcher 永不直接起 codex；
+- 绝不写 ~/.codex/config.toml；模型/Skills/网关由 CLI 自身配置继承；
+- 沙箱默认 read-only，仅任务显式写授权或已批准操作切 workspace-write；
+- 取消 = 终止子进程树（Windows 下 taskkill /T 兜底，仅默认 spawn 路径）；
+- 重启核对永远"不确定"：子进程无法跨服务存活 → 不盲目重试（票 04 转 waiting-approval）。
+
+prompt 经 stdin 注入（exec/resume 均不带位置参数）；--json 逐行事件流：
+thread.started → hooks.thread_bound；item.completed 的 agent_message 为最终回复
+（最后一条胜出），其他 item 类型入 Side-Effect Ledger；turn.failed/error → EngineError。
+
+新任务带 --ephemeral（票 11 E2E）：一次性后台任务不持久化写入用户全局
+线程存储（~/.codex thread_history / thread-writer-locks），避免与用户自己的交互
+会话 / app-server 持有的 active writer 在会话初始化时碰撞（“thread-store conflict
+... already has an active writer，”退出码 1）；resume 不带 --ephemeral（需读已持久线程；
+ephemeral 产生的 thread_id 仅供审计/写库，不可 resume）。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import shutil
+import subprocess
+from contextlib import suppress
+from typing import Any, Awaitable, Callable
+
+from app.adapters.base import EngineAdapter, EngineError, RunHooks
+
+logger = logging.getLogger(__name__)
+
+# 鸭子类型 spawn：spawn(cmd: list[str], cwd: str) -> async proc
+# （proc：stdout.read(n) 分块读（自组行缓冲，行长限制免疫） / stderr.read() /
+#  stdin.write()+drain()+close() / wait() / kill() / pid）
+SpawnFn = Callable[[list[str], str], Awaitable[Any]]
+
+
+class CodexAdapter(EngineAdapter):
+    """codex exec 子进程（--json 事件流；resume 复用 session；stdin 注入 prompt）。"""
+
+    name = "codex"
+
+    def __init__(self, cli: str = "codex", *, spawn: SpawnFn | None = None) -> None:
+        self._cli = cli
+        self._spawn = spawn  # 注入后跳过 shutil.which 检查（可测试）
+
+    def capabilities(self) -> dict[str, Any]:
+        """能力面如实上报（票 10）：codex exec CLI 只能以默认 profile 顶层启动。
+
+        - agent_discovery=True：user 级发现来源 $CODEX_HOME/agents/*.toml（票 04 reader）；
+        - default profile = direct（CLI 顶层启动）；worker/explorer/自定义 =
+          delegated_only（只能在会话内经 agent 委派调用；CLI 没有 --agent 旗标，
+          本适配器也不读 ~/.codex/config.toml 发明调用路径）；
+        - delegated_only agent 被当顶层执行 → 显式 EngineError，绝不静默回退 default。
+        """
+        return {
+            "agent_discovery": True,
+            "direct_profile_invocation": "default_only",
+            "invocation_modes": {
+                "default": "direct",
+                "worker": "delegated_only",
+                "explorer": "delegated_only",
+                "custom": "delegated_only",
+            },
+            "non_default_profile_policy": "explicit_failure",
+        }
+
+    @staticmethod
+    def _check_profile(task: dict[str, Any]) -> None:
+        """票 10：显式请求非默认 profile → delegated_only，不可顶层启动。
+
+        不发明 --agent 旗标、不读 ~/.codex/config.toml；显式 EngineError，
+        绝不静默回退 default。旧路径（None / "default"）行为不变。
+        """
+        pid = task.get("engine_profile_id")
+        if pid and pid != "default":
+            raise EngineError(
+                f"codex 非默认 profile {pid!r} 为 delegated_only"
+                "（能力面 direct_profile_invocation=default_only）：只能会话内委派调用，"
+                "CLI 不可顶层启动；显式拒绝，不发明调用旗标"
+            )
+
+    # ---------- EngineAdapter ----------
+    async def ensure_thread(self, task: dict[str, Any], run: dict[str, Any],
+                            hooks: RunHooks) -> str | None:
+        """Codex 的 session id 由 CLI 在执行中产生（thread.started 事件）；
+        已有绑定则沿用；新任务返回 None，执行中经 hooks.thread_bound 上报。"""
+        return task.get("engine_thread_id")
+
+    async def execute(self, task: dict[str, Any], run: dict[str, Any], thread: str | None,
+                      hooks: RunHooks, *, resume_note: str | None = None) -> str:
+        self._check_profile(task)
+        ws = task.get("workspace")
+        if not ws or not os.path.isdir(ws):
+            raise EngineError(f"workspace 缺席或不是目录：{ws!r}")
+            # -C must be an absolute path: the child cwd is the task workspace itself, and a
+            # relative -C would be re-resolved against that cwd (workspace\<id>\workspace\<id>)
+            # and codex would fail with "The system cannot find the specified path" (os error 3).
+        ws = os.path.abspath(ws)
+        cmd = self._build_cmd(thread, ws, task, run)
+        prompt = task.get("instruction") or ""
+        if resume_note:
+            prompt = f"{prompt}\n[恢复备注] {resume_note}" if prompt else f"[恢复备注] {resume_note}"
+        proc = None
+        try:
+            proc = await self._start(cmd, ws)
+            self._write_stdin_sync(proc, prompt)
+            await self._drain_stdin(proc)
+            final_text: str | None = None
+            turn_fail: str | None = None
+
+            async def consume(raw: bytes) -> None:
+                nonlocal final_text, turn_fail
+                text = raw.decode("utf-8", errors="replace").strip()
+                if not text:
+                    return
+                try:
+                    event = json.loads(text)
+                except json.JSONDecodeError:
+                    return  # 非 JSON 行（诊断输出）跳过
+                etype = event.get("type")
+                if etype == "thread.started":
+                    tid = event.get("thread_id") or event.get("id")
+                    if tid:
+                        await hooks.thread_bound(str(tid))
+                elif etype == "item.completed":
+                    item = event.get("item") or {}
+                    itype = item.get("type")
+                    if itype == "agent_message":
+                        final_text = item.get("text") or ""
+                    elif itype in ("reasoning", "error", "function_call_output"):
+                        return
+                    else:
+                        await hooks.side_effect(
+                            itype or "unknown",
+                            json.dumps(item, ensure_ascii=False)[:500],
+                            item.get("path") or item.get("file_path"),
+                        )
+                elif etype in ("turn.failed", "error"):
+                    turn_fail = str(event.get("error") or event.get("message") or text[:300])
+
+            # 分块 read + 自组行缓冲：免疫 StreamReader 默认 64 KiB 行长限制（票 11）：
+            # 单个事件行超限（如大段 agent_message）时 readline() 会抛
+            # "Separator is not found, and chunk exceed the limit"
+            linebuf = b""
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                linebuf += chunk
+                while b"\n" in linebuf:
+                    raw_line, linebuf = linebuf.split(b"\n", 1)
+                    await consume(raw_line)
+            if linebuf:
+                await consume(linebuf)  # EOF 后残留行可能不以换行结尾
+            rc = await proc.wait()
+            err_tail = (await self._read_stderr(proc))[-500:].strip()
+            if turn_fail:
+                raise EngineError(
+                    f"codex 轮次失败：{turn_fail}"
+                    + (f"（stderr 尾部 {err_tail}）" if err_tail else "")
+                )
+            if rc != 0:
+                raise EngineError(f"codex 退出码 {rc}（{err_tail or '无 stderr'}）")
+            return final_text if final_text else "（codex 未产出最终回复）"
+        except asyncio.CancelledError:
+            # 取消/关停：终止子进程树后原样抛出（Dispatcher 落 cancelled/interrupted）
+            self._kill_tree(proc, injected=self._spawn is not None)
+            raise
+        except BaseException:
+            # 其他崩溃路径（EngineError / 解析异常等）：同样终止子进程树，防孤儿 CLI 残留
+            self._kill_tree(proc, injected=self._spawn is not None)
+            raise
+
+    async def reconcile_running(self, task: dict[str, Any], run: dict[str, Any],
+                                thread: str | None) -> dict[str, Any]:
+        return {
+            "safe": False,
+            "result": None,
+            "detail": "codex exec 子进程无法跨服务重启存活，最终状态未知；需人工核实（不盲目重试）",
+        }
+
+    # ---------- 内部 ----------
+    def _build_cmd(self, thread: str | None, ws: str, task: dict[str, Any],
+                   run: dict[str, Any]) -> list[str]:
+        if thread:
+            # resume 继承会话沙箱（不带 -C/-s）；resume 必须读持久化线程，不带 --ephemeral
+            return [self._cli, "exec", "resume", thread, "--json", "--skip-git-repo-check"]
+        # --ephemeral（票 11 E2E）：不写入用户全局线程存储，避免与用户自己
+        # 的 codex 交互会话 / app-server 共抢 active writer 导致会话初始化失败
+        return [self._cli, "exec", "-C", ws, "-s", self._sandbox(task, run),
+                "--json", "--skip-git-repo-check", "--ephemeral"]
+
+    @staticmethod
+    def _sandbox(task: dict[str, Any], run: dict[str, Any]) -> str:
+        if task.get("writes_authorized"):
+            return "workspace-write"
+        if run.get("decision") == "approved" and run.get("pending_op"):
+            return "workspace-write"
+        return "read-only"
+
+    async def _start(self, cmd: list[str], ws: str) -> Any:
+        if self._spawn is not None:
+            return await self._spawn(cmd, ws)
+        resolved = shutil.which(self._cli)
+        if resolved is None:
+            raise EngineError(f"codex CLI 缺席：{self._cli!r}（shutil.which 未命中）")
+        # npm 安装的 CLI 常是 .CMD shim：Windows CreateProcess 不能直接跑它，需经 cmd /c
+        argv: list[str] = [resolved, *cmd[1:]]
+        if resolved.lower().endswith((".cmd", ".bat", ".batch")):
+            argv = [os.environ.get("ComSpec") or "cmd.exe", "/c", resolved, *cmd[1:]]
+        kwargs: dict[str, Any] = {
+            "cwd": ws,
+            "stdin": asyncio.subprocess.PIPE,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        cfn = getattr(subprocess, "CREATE_NO_WINDOW", None)
+        if cfn:
+            kwargs["creationflags"] = cfn
+        return await asyncio.create_subprocess_exec(*argv, **kwargs)
+
+    @staticmethod
+    def _write_stdin_sync(proc: Any, prompt: str) -> None:
+        if proc.stdin is not None:
+            proc.stdin.write(prompt.encode("utf-8"))
+
+    @staticmethod
+    async def _drain_stdin(proc: Any) -> None:
+        if proc.stdin is None:
+            return
+        await proc.stdin.drain()
+        closed = proc.stdin.close()  # 真实 asyncio 管道 close() 同步；fake 可能 async——两者兼容
+        if asyncio.iscoroutine(closed):
+            await closed
+
+    @staticmethod
+    async def _read_stderr(proc: Any) -> str:
+        if proc.stderr is None:
+            return ""
+        raw = await proc.stderr.read()
+        return raw.decode("utf-8", errors="replace") if raw else ""
+
+    @staticmethod
+    def _kill_tree(proc: Any, *, injected: bool) -> None:
+        if proc is None:
+            return
+        with suppress(ProcessLookupError):
+            proc.kill()
+        if injected:
+            return  # 测试注入的 fake proc 无真实 PID，不 taskkill
+        pid = getattr(proc, "pid", None)
+        if not pid:
+            return
+        kw: dict[str, Any] = {"capture_output": True, "timeout": 5}
+        cfn = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if cfn:
+            kw["creationflags"] = cfn
+        with suppress(Exception):
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], **kw)

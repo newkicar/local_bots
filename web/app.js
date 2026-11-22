@@ -1,0 +1,805 @@
+/* Local Dots 前端逻辑——无框架。一切经 /api，前端不直连引擎。 */
+"use strict";
+
+const TERMINAL = new Set(["completed", "reported", "failed", "rejected", "cancelled"]); // "completed" 为瞬态(→reported/追问queued)，结果面板按已了结项显示，保证“查看结果”定位必达
+const ACTIVE = new Set(["queued", "running", "waiting-approval", "interrupted"]);
+const REASON_LABEL = { blacklist: "黑名单拦截", restart_reconciliation: "重启核对", jarvis_interrupt: "Jarvis HITL 审批点" };
+const H = (id) => document.getElementById(id);
+
+const state = {
+  token: localStorage.getItem("ld_token") || "",
+  history: [],
+  es: null,
+  panel: "chat",
+  busy: false,
+  seenNotifs: new Set(),  // 任务通知卡去重（票 10，上限 200 FIFO 淘汰）
+  openDetails: new Set(),  // 已展开的任务详情：自动刷新全量重建后按此集合恢复，不再收起
+  detailCache: new Map(),   // 展开时的完整任务对象（含 runs/notifications）：重建恢复优先用它，不再重新 fetch
+  activeConv: null,          // 票 13：选中的对话 conversation_id（null=未选，全量显示）
+  convTaskIds: new Set(),   // 票 13：当前对话派发过的 task_id（筛选域）
+};
+
+/* ---------- 聊天记录持久化（方案 A）：localStorage，刷新页面不丢对话 ---------- */
+const HISTORY_KEY = "ld_chat_history";
+function loadHistory() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    if (Array.isArray(arr)) {
+      state.history = arr.filter(
+        (m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant")
+      ).map((m) => ({ role: m.role, content: m.content })).slice(-16);
+    }
+  } catch { state.history = []; }
+}
+function saveHistory() {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+}
+function restoreChatUI() {
+  for (const m of state.history) addMsg(m.role, m.content);
+  // 聊天页默认对齐最下方：恢复历史后滚到最新消息
+  const w = H("wrap");
+  if (w) w.scrollTo({ top: w.scrollHeight, behavior: "smooth" });
+}
+loadHistory();
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+/* ---------- 零依赖 Markdown 渲染（票 10）：先 esc 再转换，链接 URL 白名单 ---------- */
+function mdSafeUrl(u) {
+  const s = String(u || "").trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.toLowerCase().startsWith("mailto:")) return s;
+  if (s === "#" || s.startsWith("/")) return s;
+  return "#";
+}
+function mdInline(t) {
+  let x = t;
+  x = x.replace(/`([^`\n]+)`/g, (m, c) => "<code>" + c + "</code>");
+  x = x.replace(/\*\*([^*\n]+)\*\*/g, (m, b) => "<b>" + b + "</b>");
+  x = x.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, (m, pre, i) => pre + "<i>" + i + "</i>");
+  x = x.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (m, label, url) =>
+    '<a href="' + mdSafeUrl(url) + '" target="_blank" rel="noopener">' + label + "</a>");
+  return x;
+}
+function mdToHtml(src) {
+  const lines = String(src == null ? "" : src).split("\n").map((l) => esc(l));
+  let html = "";
+  let para = [];
+  let list = null;
+  let fence = false;
+  let code = "";
+  const flushPara = () => { if (para.length) { html += "<p>" + para.join("<br>") + "</p>"; para = []; } };
+  const flushList = () => {
+    if (!list) return;
+    html += "<" + list.type + ">" + list.items.map((it) => "<li>" + mdInline(it) + "</li>").join("") + "</" + list.type + ">";
+    list = null;
+  };
+  const flushBoth = () => { flushPara(); flushList(); };
+  for (const raw of lines) {
+    if (/^```/.test(raw)) {
+      if (fence) { html += '<pre class="md-pre"><code>' + code + "</code></pre>"; code = ""; fence = false; }
+      else { flushBoth(); fence = true; }
+      continue;
+    }
+    if (fence) { code += (code ? "\n" : "") + raw; continue; }
+    if (!raw.trim()) { flushBoth(); continue; }
+    const h = raw.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      flushBoth();
+      const lvl = Math.min(h[1].length + 2, 6);
+      html += "<h" + lvl + ' class="md-h">' + mdInline(h[2]) + "</h" + lvl + ">";
+      continue;
+    }
+    const li = raw.match(/^(?:[-*\u2022]|\d+[.)])\s+(.*)$/);
+    if (li) {
+      flushPara();
+      const type = /^\d/.test(raw) ? "ol" : "ul";
+      if (!list || list.type !== type) { flushList(); list = { type, items: [] }; }
+      list.items.push(mdInline(li[1]));
+      continue;
+    }
+    flushList();
+    para.push(raw);
+  }
+  if (fence && code) html += '<pre class="md-pre"><code>' + code + "</code></pre>";
+  flushBoth();
+  return html;
+}
+
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers);
+  headers["Authorization"] = "Bearer " + state.token;
+  if (opts.body != null) headers["Content-Type"] = "application/json";
+  const r = await fetch(path, Object.assign({}, opts, { headers }));
+  if (r.status === 401) {
+    showLogin("Token 失效，请重新输入");
+    throw new Error("401");
+  }
+  if (!r.ok) throw new Error(r.status + " " + (await r.text().catch(() => "")));
+  return r.status === 204 ? null : r.json();
+}
+
+/* ---------- 登录 ---------- */
+function showLogin(msg) {
+  if (msg) H("login-err").textContent = msg;
+  H("login").classList.remove("hidden");
+}
+function hideLogin() { H("login").classList.add("hidden"); }
+
+async function tryLogin(token) {
+  state.token = token;
+  localStorage.setItem("ld_token", token);
+  await api("/api/health");
+  hideLogin();
+  connectSSE();
+  refreshAll();
+  startPolling();
+  restoreChatUI();
+  migrateLegacyHistory();
+}
+
+H("login-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  H("login-err").textContent = "";
+  const t = H("login-token").value.trim();
+  if (!t) return;
+  tryLogin(t).catch(() => showLogin("连接失败：检查服务是否运行（127.0.0.1:8000）与 Token"));
+});
+H("btn-logout").addEventListener("click", () => {
+  localStorage.removeItem("ld_token");
+  localStorage.removeItem(HISTORY_KEY);
+  location.reload();
+});
+
+/* ---------- SSE 状态推送 ---------- */
+function connectSSE() {
+  if (state.es) state.es.close();
+  const es = new EventSource("/api/events?token=" + encodeURIComponent(state.token));
+  es.onopen = () => { setConn(true); catchUp(); };
+  es.onerror = () => setConn(false); // 浏览器自动重连
+  es.onmessage = (e) => {
+    let ev;
+    try { ev = JSON.parse(e.data); } catch { return; }
+    if (ev.type === "task_state") {
+      refreshApprovals();
+      refreshBadges();
+      if (state.panel === "tasks" || state.panel === "results") refreshCurrent();
+    }
+    if (ev.type === "notification") chatTaskNotice(ev);
+    if (ev.type === "conversation_updated") { loadConversations(); reloadConversationMessages(ev.conversation_id); }
+    if (ev.type === "conversation_deleted") {
+      if (state.activeConv === ev.conversation_id) newConversation();
+      else loadConversations();
+    }
+  };
+  state.es = es;
+}
+function setConn(ok) {
+  const c = H("conn");
+  c.textContent = ok ? "● 在线（SSE）" : "● 离线";
+  c.classList.toggle("ok", ok);
+  c.classList.toggle("bad", !ok);
+}
+
+/* ---------- 断线自愈兜底（票 07）：SSE 仅推送；手机锁屏/切后台时 EventSource 会静默断开，
+     之后任务列表/审批/角标全停更。三重兜底：
+     ① SSE 重连即补齐错过状态（onopen 里的 catchUp）；
+     ② 周期轮询兜底 —— 即便 SSE 全断，POLL_MS 内必补齐；
+     ③ 页面前台返回 / 亮屏唤醒时立即补齐。 ---------- */
+const POLL_MS = 10000;
+let pollTimer = null;
+function catchUp() { refreshAll(); loadConversations(); }
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => {
+    refreshBadges();
+    if (state.panel === "tasks" || state.panel === "results" || state.panel === "approvals") refreshCurrent();
+  }, POLL_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) catchUp(); });
+  window.addEventListener("focus", catchUp);
+}
+/* ---------- 聊天面板任务通知卡（SSE notification，票 10）：终态/挂起主动反馈，按 notification_id 去重 ---------- */
+const NOTICE_KINDS = {
+  task_completed: ["任务完成", "ok"],
+  task_failed: ["任务失败", "bad"],
+  task_rejected: ["任务被拒绝", "bad"],
+  task_cancelled: ["任务已取消", "bad"],
+  approval_requested: ["等待审批", "warn"],
+};
+function chatTaskNotice(ev) {
+  const key = ev.notification_id || ev.task_id + ":" + ev.kind;
+  if (state.seenNotifs.has(key)) return;
+  if (state.seenNotifs.size >= 200) state.seenNotifs.delete(state.seenNotifs.values().next().value);
+  state.seenNotifs.add(key);
+  const meta = NOTICE_KINDS[ev.kind] || [ev.kind, "warn"];
+  const p = ev.payload || {};
+  let body;
+  if (ev.kind === "task_completed") body = '<div class="tn-body md">' + mdToHtml(p.result) + "</div>";
+  else if (ev.kind === "task_failed") body = '<div class="tn-body err">' + esc(p.error || "无错误明细") + "</div>";
+  else if (ev.kind === "task_rejected") body = '<div class="tn-body err">' + esc(p.reject_reason || "无拒绝原因") + "</div>";
+  else if (ev.kind === "task_cancelled") body = "<div class='tn-body'>Side-Effect Ledger " + (p.ledger || []).length + " 条（只追加不回滚）</div>";
+  else if (ev.kind === "approval_requested") body = "<div class='tn-body'>" + esc(p.run_id || "") + "（原因 " + esc(p.wait_reason || "—") + "）</div>";
+  else body = '<div class="tn-body">' + esc(JSON.stringify(p)) + "</div>";
+  const isApproval = ev.kind === "approval_requested";
+  const card = document.createElement("div");
+  card.className = "msg assistant task-notice " + meta[1];
+  card.innerHTML =
+    '<div class="tn-head"><span class="status ' + meta[1] + '">' + meta[0] + '</span> ' +
+    '<span class="muted">' + esc(ev.task_id || "") + "</span></div>" +
+    body +
+    '<div class="tn-actions"><button class="ghost">' + (isApproval ? "去审批" : "查看结果") + "</button></div>";
+  card.querySelector("button").addEventListener("click", async () => {
+    if (isApproval) { switchPanel("approvals"); refreshApprovals(); return; }
+    // 定位模式：切面板不滚顶；结果渲染后按 task_id 精确定位到对应项（点“结果”标签的路径仍保持滚顶）
+    switchPanel("results", { jumpTo: ev.task_id });
+    await refreshResults(ev.task_id);
+    if (!H("res-" + ev.task_id)) openTask(ev.task_id); // 极少数（被对话筛选排除）：退回任务详情
+  });
+  H("chat-msgs").appendChild(card);
+  if (chatNearBottom()) card.scrollIntoView({ block: "end" }); // 贴近底才跟随，翻历史不被拽回
+}
+
+
+/* ---------- 面板切换 ---------- */
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => switchPanel(btn.dataset.panel));
+});
+function switchPanel(name, opts) {
+  state.panel = name;
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
+  ["chat", "tasks", "approvals", "results"].forEach((p) =>
+    H("panel-" + p).classList.toggle("hidden", p !== name)
+  );
+  const jump = opts && opts.jumpTo;
+  if (name === "tasks") refreshTasks();
+  if (name === "approvals") refreshApprovals();
+  // 定位模式：由调用方 await refreshResults(jump) 渲染并定位，此处不重复刷新
+  if (name === "results" && !jump) refreshResults();
+  // 默认滚动位：聊天贴底（最新消息），其余面板置顶；定位模式留给目标项 scrollIntoView，不滚顶
+  const w = H("wrap");
+  if (w && !jump) w.scrollTo({ top: name === "chat" ? w.scrollHeight : 0, behavior: "smooth" });
+}
+function refreshCurrent() {
+  if (state.panel === "tasks") refreshTasks(true);
+  else if (state.panel === "approvals") refreshApprovals();
+  else if (state.panel === "results") refreshResults();
+}
+function refreshAll() {
+  refreshTasks(true); refreshApprovals(); refreshResults(); refreshBadges(); refreshAutoMode();
+}
+
+/* ---------- 聊天面板 ---------- */
+function chatNearBottom() {
+  const w = H("wrap");
+  if (!w) return true;
+  return w.scrollTop + w.clientHeight >= w.scrollHeight - 120;
+}
+function addMsg(role, text, cls) {
+  if (role === "report") {
+    const card = document.createElement("div");
+    card.className = "msg report" + (cls ? " " + cls : "");
+    const tag = document.createElement("span");
+    tag.className = "report-tag";
+    tag.textContent = "任务跟进";
+    const body = document.createElement("div");
+    body.className = "report-body";
+    body.textContent = text;
+    card.appendChild(tag);
+    card.appendChild(body);
+    H("chat-msgs").appendChild(card);
+    if (chatNearBottom()) card.scrollIntoView({ block: "end" });
+    return card;
+  }
+  const m = document.createElement("div");
+  m.className = "msg " + role + (cls ? " " + cls : "");
+  m.textContent = text;
+  H("chat-msgs").appendChild(m);
+  if (chatNearBottom()) m.scrollIntoView({ block: "end" }); // 贴近底才跟随，翻历史不被拽走
+  return m;
+}
+function addTaskChips(holder, taskIds) {
+  if (!taskIds.length) return;
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  for (const id of taskIds) {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.textContent = id;
+    c.addEventListener("click", () => { switchPanel("tasks"); openTask(id); });
+    chips.appendChild(c);
+  }
+  holder.appendChild(chips);
+}
+/* 票 14：SSE conversation_updated -> 只重载当前激活对话的消息（不干扰其他对话的阅读位置） */
+async function reloadConversationMessages(cid) {
+  if (cid !== state.activeConv) return;
+  let d;
+  try { d = await api("/api/conversations/" + encodeURIComponent(cid)); } catch { return; }
+  if (!d || !Array.isArray(d.messages)) return;
+  state.convTaskIds = new Set(d.task_ids || []);
+  const w = H("wrap");
+  const nearBottom = chatNearBottom();
+  const prevTop = w ? w.scrollTop : 0;
+  const box = H("chat-msgs");
+  if (box) box.innerHTML = "";
+  for (const m of d.messages) addMsg(m.role, m.content, "no-follow");
+  if (w) w.scrollTop = nearBottom ? w.scrollHeight : prevTop; // 贴底才跟新消息，翻历史不被拽走
+}
+H("chat-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (state.busy) return;
+  const input = H("chat-input");
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = "";
+  state.busy = true;
+  addMsg("user", msg);
+  state.history.push({ role: "user", content: msg });
+  saveHistory();
+  const pend = addMsg("assistant", "秘书处理中…", "pending");
+  const stick = chatNearBottom(); // 发送时贴底：回话到达自动跟底（期间插入的任务通知卡不打断跟随）
+  try {
+    const r = await api("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message: msg,
+        history: state.history.filter((m) => m.role === "user" || m.role === "assistant").slice(0, -1),
+        conversation_id: state.activeConv,
+      }),
+    });
+    pend.remove();
+    const reply = r.reply || "（无文字回复）";
+    const m = addMsg("assistant", reply);
+    addTaskChips(m, r.task_ids || []);
+    state.history.push({ role: "assistant", content: reply });
+    if (state.history.length > 16) state.history.splice(0, state.history.length - 16);
+    saveHistory();
+    if (r.conversation_id) {
+      const wasNew = state.activeConv !== r.conversation_id;
+      state.activeConv = r.conversation_id;
+      for (const tid of r.task_ids || []) state.convTaskIds.add(tid);
+      if (wasNew) loadConversations();
+    }
+    refreshTasks(true); refreshBadges();
+    if (stick) m.scrollIntoView({ block: "end" });
+  } catch (err) {
+    pend.remove();
+    const em = addMsg("assistant", "出错了：" + err.message);
+    if (stick) em.scrollIntoView({ block: "end" });
+  } finally {
+    state.busy = false;
+    H("chat-input").focus();
+  }
+});
+
+/* ---------- 对话侧栏（票 13）：左侧历史对话选择 + 首轮自动摘要 + 跨对话共享记忆 ---------- */
+// 筛选域：选中对话时只看该对话派发的任务；未选中（activeConv=null）全量显示
+function convFilter(list, keyOf) {
+  if (!Array.isArray(list)) return [];
+  if (!state.activeConv) return list;
+  const key = keyOf || ((t) => t.task_id);
+  return list.filter((t) => state.convTaskIds.has(key(t)));
+}
+async function loadConversations() {
+  let rows;
+  try { rows = await api("/api/conversations"); } catch { return; }
+  if (!Array.isArray(rows)) rows = [];
+  if (state.activeConv && !rows.some((r) => r.conversation_id === state.activeConv)) {
+    newConversation(); /* 当前激活对话已在其他端/离线窗口被删除：清面板并重新拉取 */
+    return;
+  }
+  const box = H("conv-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!rows.length) {
+    box.innerHTML = '<div class="conv-empty">暂无对话</div>';
+    return;
+  }
+  for (const c of rows) {
+    const item = document.createElement("div");
+    item.className = "conv-item" + (state.activeConv === c.conversation_id ? " active" : "");
+    const top = document.createElement("div");
+    top.className = "conv-top";
+    const titleEl = document.createElement("div");
+    titleEl.className = "conv-title";
+    titleEl.textContent = c.title || "未命名对话";
+    const del = document.createElement("button");
+    del.className = "conv-del";
+    del.type = "button";
+    del.title = "删除对话";
+    del.textContent = "×";
+    del.addEventListener("click", (e) => { e.stopPropagation(); deleteConversation(c.conversation_id); });
+    top.appendChild(titleEl);
+    top.appendChild(del);
+    item.appendChild(top);
+    const sum = document.createElement("div");
+    sum.className = "conv-summary";
+    sum.textContent = c.summary || "";
+    item.appendChild(sum);
+    item.addEventListener("click", () => selectConversation(c.conversation_id));
+    box.appendChild(item);
+  }
+}
+async function selectConversation(cid) {
+  let d;
+  try { d = await api("/api/conversations/" + encodeURIComponent(cid)); } catch { return; }
+  if (!d || !Array.isArray(d.messages)) return;
+  state.activeConv = cid;
+  state.convTaskIds = new Set(d.task_ids || []);
+  state.openDetails.clear();
+  state.detailCache.clear();
+  const box = H("chat-msgs");
+  if (box) box.innerHTML = "";
+  state.history = d.messages.filter((m) => m.role === "user" || m.role === "assistant").slice(-16).map((m) => ({ role: m.role, content: m.content }));
+  saveHistory();
+  if (box) for (const m of d.messages) addMsg(m.role, m.content, "no-follow");
+  const w = H("wrap");
+  if (w) w.scrollTo({ top: w.scrollHeight });
+  loadConversations();
+  closeConvDrawer();
+  refreshAll();
+}
+function newConversation() {
+  state.activeConv = null;
+  state.convTaskIds = new Set();
+  state.history = [];
+  saveHistory();
+  state.openDetails.clear();
+  state.detailCache.clear();
+  const box = H("chat-msgs");
+  if (box) box.innerHTML = "";
+  loadConversations();
+  refreshAll();
+  closeConvDrawer();
+}
+async function deleteConversation(cid) {
+  try { await api("/api/conversations/" + encodeURIComponent(cid), { method: "DELETE" }); } catch { return; }
+  if (state.activeConv === cid) {
+    state.activeConv = null;
+    state.convTaskIds = new Set();
+    state.history = [];
+    saveHistory();
+    const box = H("chat-msgs");
+    if (box) box.innerHTML = "";
+  }
+  loadConversations();
+  refreshAll();
+}
+/* 旧 localStorage 聊天记录一次性迁移：对话表为空且有旧记录 → 建新对话并移除本地键 */
+async function migrateLegacyHistory() {
+  let rows;
+  try { rows = await api("/api/conversations"); } catch { return; }
+  if (!Array.isArray(rows)) return;
+  if (rows.length > 0) return;
+  const legacy = state.history.slice();
+  if (!legacy.length) return;
+  try {
+    const c = await api("/api/conversations", {
+      method: "POST",
+      body: JSON.stringify({ messages: legacy }),
+    });
+    localStorage.removeItem(HISTORY_KEY);
+    if (c && c.conversation_id) { state.activeConv = c.conversation_id; state.convTaskIds = new Set(); }
+    loadConversations();
+  } catch { /* 迁移失败保留旧 localStorage，下次再试 */ }
+}
+function openConvDrawer() {
+  const sb = H("conv-sidebar"), bd = H("conv-backdrop");
+  if (sb) sb.classList.add("open");
+  if (bd) bd.classList.remove("hidden");
+}
+function closeConvDrawer() {
+  const sb = H("conv-sidebar"), bd = H("conv-backdrop");
+  if (sb) sb.classList.remove("open");
+  if (bd) bd.classList.add("hidden");
+}
+(function bindConvSidebar() {
+  const t = H("btn-conv-toggle");
+  if (t) t.addEventListener("click", openConvDrawer);
+  const n = H("btn-new-conv");
+  if (n) n.addEventListener("click", () => { newConversation(); openConvDrawer(); });
+  const b = H("conv-backdrop");
+  if (b) b.addEventListener("click", closeConvDrawer);
+})();
+
+/* ---------- 任务列表面板 ---------- */
+async function refreshTasks(preserveScroll) {
+  try {
+    const tasks = convFilter(await api("/api/tasks"));
+    renderTasks(tasks, preserveScroll);
+  } catch { /* 401 已弹登录；网络错误保持旧列表 */ }
+}
+function renderTasks(tasks, preserveScroll) {
+  const box = H("task-list");
+  const wrap = H("wrap");
+  // 面板切换（switchPanel → refreshTasks() 缺省 false）：滚动定位统一交给 switchPanel，
+  // 重建不得写回旧 scrollTop（会取消“回到顶部”的 smooth 滚动，任务页切换后不滚顶的根因）；
+  // 后台刷新（10s 轮询 / SSE / catchUp / 聊天后刷新）传 preserveScroll=true：全量重建不打断阅读位置
+  const top = wrap && preserveScroll ? wrap.scrollTop : 0;
+  box.innerHTML = "";
+  if (!tasks.length) {
+    box.innerHTML = '<div class="empty">暂无任务</div>';
+    if (wrap && preserveScroll) wrap.scrollTop = top;
+    return;
+  }
+  for (const t of tasks) box.appendChild(taskCard(t));
+  for (const t of tasks) if (state.openDetails.has(t.task_id)) {
+    // 优先用展开时缓存的完整对象（含 runs/notifications），无缓存才退回列表数据
+    fillTaskDetail(state.detailCache.get(t.task_id) || t, H("detail-" + t.task_id));
+  }
+  if (wrap && preserveScroll) wrap.scrollTop = top; // 后台刷新全量重建不打断阅读位置（不被拉回顶）
+}
+function taskCard(t) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.id = "task-" + t.task_id;
+  const head = document.createElement("div");
+  head.style.cssText = "display:flex;gap:8px;align-items:center;cursor:pointer";
+  head.innerHTML =
+    '<span class="status ' + esc(t.status) + '">' + esc(t.status) + "</span>" +
+    "<b>" + esc(t.task_id) + "</b><span class='muted'>" + esc(t.engine || "") + "</span>" +
+    '<span class="muted" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+    esc(t.instruction || "") + "</span>";
+  head.addEventListener("click", () => toggleTaskDetail(t.task_id, t));
+  card.appendChild(head);
+  const detail = document.createElement("div");
+  detail.className = "detail hidden";
+  detail.id = "detail-" + t.task_id;
+  card.appendChild(detail);
+  return card;
+}
+function fillTaskDetail(t, detail) {
+  if (!detail) return;
+  detail.innerHTML = detailHtml(t);
+  detail.classList.remove("hidden");
+  bindTaskDetail(t, detail);
+}
+
+async function openTask(id) {
+  await toggleTaskDetail(id, null);
+  const el = H("task-" + id);
+  if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+async function toggleTaskDetail(id, cached) {
+  const detail = H("detail-" + id);
+  if (!detail) return;
+  const visible = !detail.classList.contains("hidden");
+  detail.classList.add("hidden");
+  if (visible) { state.openDetails.delete(id); return; }
+  let t = cached;
+  try { t = await api("/api/tasks/" + encodeURIComponent(id)); } catch { t = cached; }
+  if (!t) return;
+  state.openDetails.add(id);
+  if (state.detailCache.size >= 200) state.detailCache.delete(state.detailCache.keys().next().value);
+  state.detailCache.set(id, t);
+  // 竞态：await 期间自动刷新可能已全量重建 DOM，回填前重新取节点，落到新 DOM 上
+  fillTaskDetail(t, H("detail-" + id) || detail);
+}
+function detailHtml(t) {
+  let runs = "";
+  for (const r of t.runs || []) {
+    runs +=
+      '<div class="run-row"><span class="status ' + esc(r.state) + '">' + esc(r.state) +
+      "</span> <span>第" + r.attempt + "次</span> <span class='muted'>来源 " + esc(r.origin) +
+      "</span> " +
+      (r.side_effects && r.side_effects.length ? "<span class='muted'>副作用 " + r.side_effects.length + " 条</span>" : "") +
+      "</div>";
+  }
+  const notifs = (t.notifications || []).map(
+    (n) => '<div class="kv">◆ ' + esc(n.kind) + "：" + esc(JSON.stringify(n.payload == null ? "" : n.payload)) + "</div>"
+  ).join("");
+  const followable = !ACTIVE.has(t.status);
+  return (
+    '<div class="kv"><b>引擎</b> ' + esc(t.engine) + "　<b>线程</b> " + esc(t.engine_thread_id || "—") +
+    "　<b>可写</b> " + (t.writes_authorized ? "是" : "否") + "</div>" +
+    '<div class="kv"><b>工作区</b> ' + esc(t.workspace || "—") + "</div>" +
+    (t.result ? '<div class="kv"><b>结果</b></div><div class="md">' + mdToHtml(t.result) + "</div>" : "") +
+    (t.error ? '<div class="kv" style="color:var(--bad)"><b>错误</b> ' + esc(t.error) + "</div>" : "") +
+    (t.reject_reason ? '<div class="kv" style="color:var(--warn)"><b>拒绝原因</b> ' + esc(t.reject_reason) + "</div>" : "") +
+    (runs ? '<div class="kv"><b>Run 历史</b></div>' + runs : "") +
+    (notifs ? '<div class="kv"><b>通知</b></div>' + notifs : "") +
+    '<div class="actions">' +
+      (followable
+        ? '<input id="fu-' + t.task_id + '" placeholder="在本任务内追问…"><button class="primary" id="fu-btn-' + t.task_id + '">追问</button>'
+        : "<span class='muted'>任务进行中，不可追问（完成后即可在同一 Thread 内追问）</span>") +
+      (ACTIVE.has(t.status) ? '<button class="danger" id="cx-' + t.task_id + '">取消任务</button>' : "") +
+    "</div>"
+  );
+}
+function bindTaskDetail(t, detail) {
+  const fu = H("fu-" + t.task_id);
+  if (fu) {
+    H("fu-btn-" + t.task_id).addEventListener("click", async () => {
+      const instr = fu.value.trim();
+      if (!instr) return;
+      fu.value = "";
+      try {
+        await api("/api/tasks/" + encodeURIComponent(t.task_id) + "/followup", {
+          method: "POST", body: JSON.stringify({ instruction: instr }),
+        });
+        refreshTasks(true); refreshBadges();
+      } catch (err) { alert("追问失败：" + err.message); refreshTasks(true); }
+    });
+  }
+  const cx = H("cx-" + t.task_id);
+  if (cx) {
+    cx.addEventListener("click", async () => {
+      try {
+        const r = await api("/api/tasks/" + encodeURIComponent(t.task_id) + "/cancel", { method: "POST" });
+        alert("已取消（Side-Effect Ledger " + (r.ledger || []).length + " 条，只追加不回滚）");
+        refreshTasks(true); refreshBadges();
+      } catch (err) { alert("取消失败：" + err.message); }
+    });
+  }
+}
+H("btn-refresh-tasks").addEventListener("click", refreshTasks);
+
+/* ---------- 审批面板 ---------- */
+async function refreshApprovals() {
+  let items;
+  try { items = await api("/api/approvals"); } catch { return; }
+  items = Array.isArray(items) ? convFilter(items, (a) => a.task_id) : [];
+  const box = H("approval-list");
+  box.innerHTML = "";
+  setBadge("approvals", items.length);
+  if (!items.length) { box.innerHTML = '<div class="empty">没有待审批的 Run</div>'; return; }
+  for (const a of items) box.appendChild(approvalCard(a));
+}
+function srcLabel(reason) {
+  return REASON_LABEL[reason] || "来源：" + (reason || "未知");
+}
+function approvalCard(a) {
+  const card = document.createElement("div");
+  card.className = "card approval";
+  const po = (a.pending_op && a.pending_op.pending_op) || a.pending_op || {};
+  card.innerHTML =
+    '<h3>' + esc(a.run_id) + "（" + esc(a.task_id) + "）" +
+    (a.timeout_at ? ' <span class="muted">超时于 ' + new Date(a.timeout_at).toLocaleString() + "</span>" : "") + "</h3>" +
+    '<div class="op">' + esc(po.kind || "—") + " " + esc(po.path || "—") +
+    (po.detail ? "（" + esc(po.detail) + "）" : "") + "</div>" +
+    '<div class="kv"><b>挂起原因</b> ' + esc(a.wait_reason || "—") + "</div>" +
+    '<div class="kv src">来源：' + esc(srcLabel(a.wait_reason)) + "</div>" +
+    (a.instruction ? '<div class="kv"><b>指令</b> ' + esc(a.instruction) + "</div>" : "") +
+    (a.workspace ? '<div class="kv"><b>工作区</b> ' + esc(a.workspace) + "</div>" : "") +
+    (a.approved_paths && a.approved_paths.length ? '<div class="kv"><b>已放行路径</b> ' + esc(a.approved_paths.join(", ")) + "</div>" : "") +
+    (po.actions && po.actions.length ? '<div class="kv"><b>动作</b> ' + esc(po.actions.map((x) => x.tool + " " + x.arg).join("; ")) + "</div>" : "") +
+    (a.side_effects && a.side_effects.length ? '<div class="kv"><b>Side-Effect Ledger（' + a.side_effects.length + " 条）</b></div><pre class='ledger'>" + esc(JSON.stringify(a.side_effects, null, 1)) + "</pre>" : "") +
+    '<div class="actions"><button class="primary" data-act="approve">批准</button>' +
+    '<input data-reason placeholder="拒绝原因（必填）"><button class="warn" data-act="reject">拒绝</button></div>';
+  card.querySelector('[data-act="approve"]').addEventListener("click", async () => {
+    try { await api("/api/approvals/" + encodeURIComponent(a.run_id) + "/approve", { method: "POST" }); refreshAll(); }
+    catch (err) { alert("批准失败：" + err.message); refreshApprovals(); }
+  });
+  card.querySelector('[data-act="reject"]').addEventListener("click", async () => {
+    const reason = card.querySelector("[data-reason]").value.trim() || "（未填写）";
+    try { await api("/api/approvals/" + encodeURIComponent(a.run_id) + "/reject", { method: "POST", body: JSON.stringify({ reason }) }); refreshAll(); }
+    catch (err) { alert("拒绝失败：" + err.message); refreshApprovals(); }
+  });
+  return card;
+}
+H("btn-refresh-approvals").addEventListener("click", refreshApprovals);
+
+/* ---------- 代审模式（auto_safe / yolo） ---------- */
+async function refreshAutoMode() {
+  let info;
+  try { info = await api("/api/approval-mode"); } catch { return; }
+  for (const b of document.querySelectorAll(".auto-mode-btn")) {
+    b.classList.toggle("active", b.dataset.mode === info.mode);
+  }
+  const note = H("auto-mode-note");
+  if (!note) return;
+  note.textContent =
+    info.mode === "yolo" ? "YOLO：全部审批自动放行（含文件改动/删除），风险自负"
+    : info.mode === "auto_safe" ? "有限代审：仅只读命令（读文件、查状态等）自动放行，文件写/删仍需人工"
+    : "手动：逐条人工审批（代审模式重启后回落 .env 的 LD_APPROVAL_MODE 配置值）";
+}
+for (const b of document.querySelectorAll(".auto-mode-btn")) {
+  b.addEventListener("click", async () => {
+    try {
+      await api("/api/approval-mode", { method: "POST", body: JSON.stringify({ mode: b.dataset.mode }) });
+      refreshAutoMode(); refreshApprovals();
+    } catch (err) { alert("切换代审模式失败：" + err.message); }
+  });
+}
+
+/* ---------- 结果面板 ---------- */
+async function refreshResults(jumpId) {
+  let tasks;
+  try { tasks = convFilter(await api("/api/tasks")); } catch { return; }
+  const done = tasks.filter((t) => TERMINAL.has(t.status));
+  setBadge("results", done.length);
+  const box = H("result-list");
+  box.innerHTML = "";
+  if (!done.length) { box.innerHTML = '<div class="empty">暂无已终结任务</div>'; return; }
+  let list = done.slice(0, 30);
+  // 跳转定位：目标在前 30 条之外时也必须保证在场（task_id 精确匹配）
+  if (jumpId && !list.some((t) => t.task_id === jumpId)) {
+    const extra = done.find((t) => t.task_id === jumpId);
+    if (extra) list = list.concat([extra]);
+  }
+  for (const t of list) box.appendChild(resultCard(t));
+  if (jumpId) {
+    const el = H("res-" + jumpId);
+    if (el) {
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+      el.classList.add("res-flash");
+      el.addEventListener("animationend", () => el.classList.remove("res-flash"), { once: true });
+    }
+  }
+}
+function resultCard(t) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.id = "res-" + t.task_id;  // 聊天面板通知卡跳转目标
+  card.dataset.taskId = t.task_id; // 稳定锚点：精确匹配用 task_id，不做模糊文本匹配
+  const ledger = (t.runs || []).flatMap((r) => r.side_effects || []);
+  card.innerHTML =
+    '<div style="display:flex;gap:8px;align-items:center;cursor:pointer" class="rc-head">' +
+    '<span class="status ' + esc(t.status) + '">' + esc(t.status) + "</span>" +
+    "<b>" + esc(t.task_id) + "</b>" +
+    '<span class="muted" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+    esc(t.instruction || "") + "</span></div>" +
+    (t.result ? '<div class="kv"><b>结果</b></div><div class="md">' + mdToHtml(t.result) + "</div>" : "") +
+    (t.error ? '<div class="kv" style="color:var(--bad)"><b>错误</b> ' + esc(t.error) + "</div>" : "") +
+    (t.reject_reason ? '<div class="kv" style="color:var(--warn)"><b>拒绝</b> ' + esc(t.reject_reason) + "</div>" : "") +
+    '<div class="kv"><b>Side-Effect Ledger（' + ledger.length + " 条，只追加）</b></div>" +
+    '<pre class="ledger">' + esc(ledger.length ? JSON.stringify(ledger, null, 1) : "[]") + "</pre>";
+  card.querySelector(".rc-head").addEventListener("click", () => {});
+  return card;
+}
+H("btn-refresh-results").addEventListener("click", refreshResults);
+
+/* ---------- 角标 / 徽章 ---------- */
+async function refreshBadges() {
+  let tasks;
+  try { tasks = convFilter(await api("/api/tasks")); } catch { return; }
+  setBadge("tasks", tasks.filter((t) => ACTIVE.has(t.status)).length);
+  let ap = 0;
+  try {
+    const apItems = await api("/api/approvals");
+    ap = (Array.isArray(apItems) ? convFilter(apItems, (a) => a.task_id) : []).length;
+  } catch {}
+  setBadge("approvals", ap);
+}
+function setBadge(name, n) {
+  const b = H("badge-" + name);
+  b.textContent = String(n);
+  b.classList.toggle("hidden", n === 0);
+}
+
+/* ---------- 悬浮回顶/回底控件：跟随 .wrap 滚动容器，按可滚动量自动显隐 ---------- */
+(function bindScrollArrows() {
+  const wrap = H("wrap");
+  const up = H("to-top");
+  const down = H("to-bottom");
+  if (!wrap || !up || !down) return;
+  const sync = () => {
+    const over = wrap.scrollHeight > wrap.clientHeight + 8;
+    const atBottom = over && wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 8;
+    up.classList.toggle("hidden", !over);
+    // 贴底时“回底”箭头正好压在聊天输入行（fixed 右下角）上会挡住输入/发送，贴底时隐藏
+    down.classList.toggle("hidden", !over || atBottom);
+  };
+  up.addEventListener("click", () => wrap.scrollTo({ top: 0, behavior: "smooth" }));
+  down.addEventListener("click", () => wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" }));
+  wrap.addEventListener("scroll", sync, { passive: true });
+  window.addEventListener("resize", sync);
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(sync);
+    ro.observe(wrap);
+    document.querySelectorAll(".panel").forEach((p) => ro.observe(p));
+  }
+  sync();
+})();
+
+/* ---------- 启动 ---------- */
+if (state.token) {
+  tryLogin(state.token).catch(() => showLogin(""));
+  loadConversations();
+} else {
+  showLogin("");
+}
