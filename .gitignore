@@ -30,3 +30,7 @@ uvicorn.err.log
 
 # taste-skill workdir (inspector output, not in repo)
 .taste-skill/
+
+# 本机暂存快照与 Jarvis 本机配置（内容已入库/无密钥，勿再跟踪）
+.stage/
+jarvis.json
