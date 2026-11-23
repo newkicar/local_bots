@@ -2,6 +2,8 @@
 
 经 HTTP API 驱动；注入假 agent（不 import 真实 Jarvis 模块），
 checkpointer 走真实 AsyncSqliteSaver + aiosqlite（独立 SQLite 库）。
+票 14：审批备注两段式注入的端到端验证 + 单元直驱两阶段分支
+（干净 resume / 再挂起 / 空备注 / 新轮路径）。
 """
 from __future__ import annotations
 
@@ -11,9 +13,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from langgraph.types import Command
 
+from app.adapters.base import RunHooks, RunSuspended
 from app.adapters.jarvis import JarvisAdapter
 from app.main import create_app
 from tests.test_api_skeleton import BASE, _headers, _settings, _submit, _wait_terminal
@@ -56,7 +60,16 @@ class FakeJarvisAgent:
         if self.interrupt:
             if len(self.seen) == 1:
                 return {"messages": [], "__interrupt__": [SimpleNamespace(value="jarvis HITL 审批点")]}
-            return {"messages": [{"role": "ai", "content": "after-approval"}]}
+            if isinstance(payload, Command):
+                return {"messages": [{"role": "ai", "content": "after-approval"}]}
+            # 票 14：干净放行后第二次 ainvoke 携带备注用户消息 → 干净回复
+            user_text = payload["messages"][0]["content"]
+            return {
+                "messages": [
+                    {"role": "user", "content": user_text},
+                    {"role": "ai", "content": f"followup done: {user_text}"},
+                ]
+            }
         if len(self.seen) == 1:
             return {
                 "messages": [
@@ -144,24 +157,41 @@ def test_hitl_interrupt_maps_to_approval_gate():
         assert isinstance(resume_payload, Command), "审批恢复必须携带 HITL resume 决策（Command）"
         assert resume_payload.resume == {"decisions": [{"type": "approve"}]}
         assert agent.seen[1][1]["configurable"]["thread_id"] == tid
-        assert t2["result"] == "after-approval"
+        # 票 14：resume 干净返回后，审批备注经同 thread 第二次 ainvoke 注入，
+        # 最终回复取第二次调用
+        assert t2["result"].startswith("followup done: [审批] 已放行"), t2["result"]
+        note_payload = agent.seen[2][0]
+        assert not isinstance(note_payload, Command), "备注注入走普通用户消息，非 resume 协议"
+        assert note_payload["messages"][0]["role"] == "user"
+        assert note_payload["messages"][0]["content"].startswith("[审批] 已放行")
+        assert agent.seen[2][1]["configurable"]["thread_id"] == tid
         assert t2["engine_thread_id"] == tid
 
 
 # ---------- 回归：HITL 挂起线程对 None 输入不放行（仅重新挂起），批准必须以决策 resume ----------
 class FakeHitlProtocolAgent:
     """模拟 LangGraph HITL 语义：放行挂起中断必须凭 Command(resume=decisions)；
-    None 输入不消费中断，原样再次返回 __interrupt__（旧实现的审批循环根因）。"""
+    None 输入不消费中断，原样再次返回 __interrupt__（旧实现的审批循环根因）。
+    票 14：干净放行后审批备注经第二次用户消息注入（noted 分支）。"""
 
     def __init__(self) -> None:
         self.seen: list[Any] = []
         self._pending = False
+        self._resumed = False
 
     async def ainvoke(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
         self.seen.append(payload)
         if isinstance(payload, Command) and payload.resume:
             self._pending = False
+            self._resumed = True
             return {"messages": [{"role": "ai", "content": "after-approval"}]}
+        if self._resumed:
+            # 票 14：干净放行后第二次 ainvoke 携带备注用户消息 → 干净回复
+            return {
+                "messages": [
+                    {"role": "ai", "content": f"noted: {payload['messages'][0]['content']}"}
+                ]
+            }
         if not self._pending:
             self._pending = True
         return {
@@ -194,10 +224,12 @@ def test_resume_none_input_does_not_release_hitl_interrupt():
         r = c.post(f"/api/approvals/{rid}/approve", headers=_headers())
         assert r.status_code == 200, r.text
         t2 = _wait_terminal(c, tid, want=("reported",))
-        assert t2["result"] == "after-approval"
-        # 仅两次 ainvoke：首次中断 + 批准 resume；无第三次（旧实现会无限循环）
-        assert len(agent.seen) == 2, f"不应出现重新挂起循环: {agent.seen}"
+        # 票 14：备注经第二次 ainvoke 注入，最终回复取第二次调用
+        assert t2["result"].startswith("noted: [审批] 已放行"), t2["result"]
+        # 仅三次 ainvoke：首次中断 + 批准 resume + 备注注入；无第四次（旧实现会无限循环）
+        assert len(agent.seen) == 3, f"不应出现重新挂起循环: {agent.seen}"
         assert isinstance(agent.seen[1], Command), "恢复输入必须为 HITL resume 决策"
+        assert agent.seen[2]["messages"][0]["content"].startswith("[审批] 已放行"), "备注经同 thread 第二次用户消息注入"
 
 
 # ---------- 重启核对：无检查点 / HITL 挂起 / 未完成超步 / 干净可恢复 ----------
@@ -313,3 +345,103 @@ def test_hitl_string_interrupt_yields_no_actions():
         approvals = c.get("/api/approvals", headers=_headers()).json()
         row = next(a for a in approvals if a["run_id"] == rid)
         assert row["pending_op"]["pending_op"]["actions"] == []
+
+
+# ---------- 票 14 两阶段备注注入：单元直驱（adapter.execute + 假工厂 + pending 接缝），不走 HTTP ----------
+class FakeTwoStageAgent:
+    """两阶段验证假 agent：Command 放行 → 干净 'after-approval'；
+    备注用户消息 → 'noted'；reinterrupt_on_note=True → 第二次调用再挂 __interrupt__。"""
+
+    def __init__(self, reinterrupt_on_note: bool = False) -> None:
+        self.seen: list[tuple[Any, Any]] = []
+        self.reinterrupt_on_note = reinterrupt_on_note
+
+    async def ainvoke(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
+        self.seen.append((payload, config))
+        if isinstance(payload, Command) and payload.resume:
+            return {"messages": [{"role": "ai", "content": "after-approval"}]}
+        if self.reinterrupt_on_note:
+            return {
+                "messages": [],
+                "__interrupt__": [
+                    SimpleNamespace(
+                        value={
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "git push"}}
+                            ]
+                        }
+                    )
+                ],
+            }
+        return {"messages": [{"role": "ai", "content": "noted"}]}
+
+
+def _unit_env(name: str, *, pending: bool, reinterrupt_on_note: bool = False):
+    """单元直驱环境：真实 checkpoints.db（独立 SQLite 库）+ 假工厂 +
+    _has_pending_interrupt 实例级接缝；WinError 5 纪律：自建临时目录（tests/tmp_workspace/）。"""
+    settings = _settings(name)
+    os.makedirs(settings.ld_data_dir, exist_ok=True)
+    os.makedirs(settings.ld_workspace_dir, exist_ok=True)
+    agent = FakeTwoStageAgent(reinterrupt_on_note=reinterrupt_on_note)
+    factory, _ = _make_factory(agent)
+    adapter = JarvisAdapter(settings.checkpoints_db_path, agent_factory=factory)
+
+    async def _pending_seam(checkpointer: Any, config: dict[str, Any]) -> bool:
+        return pending
+
+    adapter._has_pending_interrupt = _pending_seam  # 接缝：模拟线程停在 HITL 审批点
+    task = {"task_id": "T14", "instruction": "敏感操作", "workspace": str(settings.ld_workspace_dir)}
+    run = {"run_id": "R14", "decision": "approved" if pending else None}
+    return adapter, agent, task, run
+
+
+async def test_two_stage_note_injected_after_clean_resume():
+    """resume 干净返回 + 备注非空 → 同 thread 二次 ainvoke 注入备注，最终回复取第二次。"""
+    adapter, agent, task, run = _unit_env("jarvis-t14-clean", pending=True)
+    hooks = RunHooks(task, run, None)  # execute 不经任何 hooks 回调，dispatcher 传 None 安全
+    result = await adapter.execute(task, run, "T14", hooks, resume_note="补充：只推 dev 分支")
+    assert result == "noted"
+    assert len(agent.seen) == 2, "两阶段：resume + 备注"
+    resume_payload, resume_config = agent.seen[0]
+    assert isinstance(resume_payload, Command)
+    assert resume_payload.resume == {"decisions": [{"type": "approve"}]}
+    assert resume_config["configurable"]["thread_id"] == "T14"
+    note_payload, note_config = agent.seen[1]
+    assert note_payload == {"messages": [{"role": "user", "content": "补充：只推 dev 分支"}]}
+    assert not isinstance(note_payload, Command), "备注走普通用户消息，非 resume 协议"
+    assert note_config["configurable"]["thread_id"] == "T14"
+
+
+async def test_two_stage_note_reinterrupt_keeps_suspended():
+    """第二次调用再挂起 → RunSuspended（备注已入线程历史不丢；下次放行随新 execute 再注入，天然重试）。"""
+    adapter, agent, task, run = _unit_env("jarvis-t14-reint", pending=True, reinterrupt_on_note=True)
+    hooks = RunHooks(task, run, None)
+    with pytest.raises(RunSuspended) as exc:
+        await adapter.execute(task, run, "T14", hooks, resume_note="补充")
+    assert exc.value.pending_op["kind"] == "jarvis_interrupt"
+    assert exc.value.pending_op["actions"] == [{"tool": "execute", "arg": "git push"}]
+    assert agent.seen[1][0] == {"messages": [{"role": "user", "content": "补充"}]}, "备注进入了第二次调用"
+    assert len(agent.seen) == 2
+
+
+async def test_two_stage_empty_note_cost_neutral():
+    """备注为空 → 不产生第二次 ainvoke（成本中性，回归锁）。"""
+    adapter, agent, task, run = _unit_env("jarvis-t14-empty", pending=True)
+    hooks = RunHooks(task, run, None)
+    result = await adapter.execute(task, run, "T14", hooks, resume_note=None)
+    assert result == "after-approval"
+    assert len(agent.seen) == 1, "备注为空单次调用"
+    assert isinstance(agent.seen[0][0], Command)
+
+
+async def test_two_stage_fresh_turn_payload_unchanged():
+    """新轮路径字节级不变：备注仍拼入 text，无二次调用（回归锁）。"""
+    adapter, agent, task, run = _unit_env("jarvis-t14-fresh", pending=False)
+    hooks = RunHooks(task, run, None)
+    result = await adapter.execute(task, run, "T14", hooks, resume_note="补充")
+    assert result == "noted"
+    assert len(agent.seen) == 1
+    assert agent.seen[0][0] == {
+        "messages": [{"role": "user", "content": "敏感操作\n[恢复备注] 补充"}]
+    }
+

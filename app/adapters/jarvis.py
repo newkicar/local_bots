@@ -12,6 +12,13 @@
   审批放行后以 ainvoke(Command(resume={"decisions": [...]}), config) 从断点续行
   （HITL 挂起中断只能凭 resume 决策放行；普通 None 输入仅原样重新挂起，
   会导致批准后反复触发 approval_requested）。
+- HITL 审批备注两段式注入（票 14）：HITL 的 approve 决策协议
+  （type/approve/reject + updated_args）不携带自由文本，单段 resume 必然
+  静默丢弃 resume_note。修复为两段式：resume ainvoke 干净返回（无新
+  __interrupt__）且 resume_note 非空 → 同 thread 第二次 ainvoke 用户消息
+  注入备注，最终回复取第二次；第二次再挂起 → 走既有 RunSuspended 路径，
+  备注已入线程历史不丢（下次审批放行时随新 execute 再注入，天然重试）；
+  备注为空 → 零额外调用（成本中性）。新轮路径行为不变（备注仍拼入 text）。
 """
 from __future__ import annotations
 
@@ -112,24 +119,28 @@ class JarvisAdapter(EngineAdapter):
             await saver.setup()
             agent = await self._agent_factory(ws, saver)
             config = {"configurable": {"thread_id": thread or task["task_id"]}}
-            if await self._has_pending_interrupt(saver, config):
+            resuming = await self._has_pending_interrupt(saver, config)
+            if resuming:
                 # 审批放行后的断点续行：HITL 挂起中断必须携带 resume 决策放行；
                 # None 输入不会放行，仅原样重新挂起（审批循环）。
                 payload: Any = await self._resume_payload(saver, config, run.get("decision"))
             else:
                 payload = {"messages": [{"role": "user", "content": text}]}
             state = await agent.ainvoke(payload, config)
-            interrupts = state.get("__interrupt__") or []
-            if interrupts:
-                raise RunSuspended(
-                    {
-                        "kind": "jarvis_interrupt",
-                        "path": ws,
-                        "detail": str(interrupts[0].value)[:300],
-                        "actions": self._interrupt_actions(interrupts[0].value),
-                    },
-                    "jarvis_interrupt",
+            suspended = self._interrupt_suspended(state, ws)
+            if suspended is not None:
+                raise suspended
+            # 票 14 两段式：resume 段干净返回后，审批备注经同 thread 第二次
+            # ainvoke 注入（备注为空 → 零额外调用，成本中性；二次再挂起 →
+            # RunSuspended，备注已入线程历史不丢，下次放行随新 execute 再注入）。
+            if resuming and resume_note:
+                note_state = await agent.ainvoke(
+                    {"messages": [{"role": "user", "content": resume_note}]}, config
                 )
+                note_suspended = self._interrupt_suspended(note_state, ws)
+                if note_suspended is not None:
+                    raise note_suspended
+                state = note_state
             return self._final_reply(state)
         except EngineError:
             raise
@@ -155,6 +166,22 @@ class JarvisAdapter(EngineAdapter):
             w[1] == "__interrupt__" for w in (getattr(tup, "pending_writes", None) or [])
         )
 
+    @staticmethod
+    def _interrupt_suspended(state: Any, ws: str) -> RunSuspended | None:
+        """ainvoke 状态含 __interrupt__ → 构造既有 RunSuspended 挂起；干净返回 → None。"""
+        interrupts = state.get("__interrupt__") or []
+        if not interrupts:
+            return None
+        return RunSuspended(
+            {
+                "kind": "jarvis_interrupt",
+                "path": ws,
+                "detail": str(interrupts[0].value)[:300],
+                "actions": JarvisAdapter._interrupt_actions(interrupts[0].value),
+            },
+            "jarvis_interrupt",
+        )
+
     async def _resume_payload(
         self, checkpointer: AsyncSqliteSaver, config: dict[str, Any], decision: str | None
     ) -> Any:
@@ -166,6 +193,12 @@ class JarvisAdapter(EngineAdapter):
         （decision='approved'，ApprovalGate.approve 写入）才放行；
         未批准的防御路径返回 None —— 引擎将原样重新挂起并再次请求审批
         （保守：绝不无批准自动放行）。
+
+        审批备注不在这里注入（票 14）：HITL approve 决策协议
+        （type/approve/reject + updated_args）不携带自由文本，单段 resume
+        必然丢备注；备注由 execute 的两段式第二次 ainvoke（同 thread 用户
+        消息）注入，若该次再挂起，备注已入线程历史，下次放行随新 execute
+        再注入（天然重试）。
         """
         if decision != "approved":
             return None
