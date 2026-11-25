@@ -1,1 +1,2 @@
 date	phase	rule_id	decision	why	evidence	result
+2026-11-25	architecture-review	B1-rev2	SubmissionService 在 router 为 None 时降级为纯引擎提交；显式 agent/project 提交以 TaskSubmissionError 拒绝	四既有测试锁定无 router 仅引擎提交契约，全面拒绝会破坏 test_conversations/test_followup/test_secretary	tests/test_submission.py::test_b1_11_router缺省纯引擎提交、test_b1_12_router缺省拒绝agent提交	已验证（全量 pytest 191 passed / 2 个既有 codex 真 CLI 失败）

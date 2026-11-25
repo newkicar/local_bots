@@ -24,7 +24,7 @@ from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
 from app.agents.catalog import AgentCatalog, InvalidAgentTransition
 from app.agents.project_trust import ProjectTrustService
-from app.agents.router import AgentRouter, RoutingError, freeze_snapshot
+from app.agents.router import AgentRouter, RoutingError
 from app.agents.sync import VALID_SYNC_SCOPES, AgentSyncOrchestrator
 from app.approval import ApprovalGate
 from app.auto_approve import MODES, AutoApprover
@@ -36,6 +36,7 @@ from app.permissions import Blacklist, coarse_task_policy
 from app.reconcile import reconcile_on_startup
 from app.secretary import Secretary
 from app.settings import Settings, get_settings
+from app.submission import SubmissionService, TaskSubmissionError
 from app.task_manager import InvalidTransition, TaskManager
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,7 @@ def create_app(
     router = AgentRouter(catalog, trust, available_engines=set(resolved_engines),
                          routing_mode=settings.ld_agent_routing_mode,
                          catalog_enabled=settings.ld_agent_catalog_enabled)
+    submission = SubmissionService(tm, router, settings)
     dispatcher = Dispatcher(
         tm,
         resolved_engines,
@@ -202,6 +204,7 @@ def create_app(
     app.state.memory = memory
     app.state.catalog = catalog
     app.state.router = router
+    app.state.submission = submission
     app.state.trust = trust
     app.state._bg_tasks: set[asyncio.Task] = set()
 
@@ -220,27 +223,20 @@ def create_app(
     @app.post("/api/tasks", status_code=201, dependencies=[auth])
     async def submit_task(body: SubmitTask) -> dict[str, Any]:
         try:
-            decision = await router.resolve(agent_id=body.agent_id, engine=body.engine, project_id=body.project_id)
+            task, _engine = await submission.submit(
+                body.instruction,
+                engine=body.engine,
+                workspace=body.workspace,
+                parent_task_id=body.parent_task_id,
+                writes_authorized=body.writes_authorized,
+                agent_id=body.agent_id,
+                project_id=body.project_id,
+            )
         except RoutingError as exc:
             raise HTTPException(status_code=422, detail=exc.full_detail)
-        selected = decision["selected_agent_id"]
-        agent = await router.agent_row(selected) if selected else None
-        snapshot = freeze_snapshot(agent) if agent else None
-        profile_id = decision["engine_profile_id"]
-        profile_ver = agent.get("profile_version") if agent else None
-        profile_hash = agent.get("profile_hash") if agent else None
-        task_project_id = body.project_id or ((agent.get("metadata") or {}).get("project_id") if agent else None)
-        task = await tm.create_task(instruction=body.instruction, engine=decision["engine"] or "jarvis",
-            workspace=body.workspace, parent_task_id=body.parent_task_id, writes_authorized=body.writes_authorized,
-            agent_id=selected, project_id=task_project_id, engine_profile_id=profile_id,
-            engine_profile_version=profile_ver, engine_profile_hash=profile_hash, agent_snapshot=snapshot)
-        if task["workspace"] is None:
-            ws = settings.ld_workspace_dir / task["task_id"]
-            ws.mkdir(parents=True, exist_ok=True)
-            await tm.set_task_workspace(task["task_id"], str(ws))
-        await tm.transition_task(task["task_id"], "queued", from_states={"queued"},
-                                 routing_decision_json=json.dumps(decision, ensure_ascii=False))
-        return await tm.get_task(task["task_id"])
+        except TaskSubmissionError as exc:
+            raise HTTPException(status_code=500, detail=exc.detail)
+        return task
 
     @app.get("/api/tasks", dependencies=[auth])
     async def list_tasks() -> list[dict[str, Any]]:

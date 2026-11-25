@@ -29,10 +29,11 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import tool
 
-from app.agents.router import AgentRouter, RoutingError, freeze_snapshot
+from app.agents.router import AgentRouter, RoutingError
 from app.dispatcher import Dispatcher
 from app.memory import MemoryStore
 from app.settings import Settings
+from app.submission import SubmissionService, TaskSubmissionError
 from app.task_manager import InvalidTransition, TaskManager
 
 #: 发现类操作默认上限（构造函数 caps 可覆盖，测试用极小值）；超时/截断都返回 JSON，绝不失控。
@@ -114,6 +115,7 @@ class Secretary:
         self._dispatcher = dispatcher
         self._memory = memory
         self._router = router
+        self._submission = SubmissionService(tm, router, settings)
         self._settings = settings
         self._caps = {**DEFAULT_CAPS, **(caps or {})}
         self._model = model
@@ -250,52 +252,27 @@ class Secretary:
             return _jerr(f"未知引擎: {engine!r}；可用: {sorted(self._engine_names)}")
         if agent_id is not None and self._router is None:
             return _jerr("agent 路由未接线（router 未接线），拒绝显式 agent 提交")
-        decision: dict[str, Any] | None = None
-        selected: str | None = None
-        agent_row: dict[str, Any] | None = None
-        task_engine = eng
-        if agent_id is not None:
-            try:
-                decision = await self._router.resolve(agent_id=agent_id, engine=engine)
-            except RoutingError as exc:
-                return _jerr(f"agent 校验失败: {exc.full_detail}")
-            selected = decision["selected_agent_id"]
-            agent_row = await self._router.agent_row(selected) if selected else None
-            task_engine = decision["engine"] if selected else eng
         if workspace is not None and not os.path.isdir(os.path.normcase(str(workspace))):
             return _jerr(f"workspace 不存在或不是目录: {workspace}")
         try:
-            task = await self._tm.create_task(
-                instruction=instruction,
-                engine=task_engine,
+            task, task_engine = await self._submission.submit(
+                instruction,
+                engine=engine,
                 workspace=workspace,
                 writes_authorized=writes_authorized,
-                agent_id=selected,
-                project_id=((agent_row.get("metadata") or {}).get("project_id") if agent_row else None),
-                engine_profile_id=decision["engine_profile_id"] if decision else None,
-                engine_profile_version=agent_row.get("profile_version") if agent_row else None,
-                engine_profile_hash=agent_row.get("profile_hash") if agent_row else None,
-                agent_snapshot=freeze_snapshot(agent_row) if agent_row else None,
+                agent_id=agent_id,
             )
-        except Exception as exc:  # 工具永不向 LLM 抛异常
-            return _jerr(f"任务创建失败: {exc}")
-        if task["workspace"] is None:
-            auto = self._settings.ld_workspace_dir / task["task_id"]
-            auto.mkdir(parents=True, exist_ok=True)
-            await self._tm.set_task_workspace(task["task_id"], str(auto))
-            task["workspace"] = str(auto)
-        if decision is not None:
-            await self._tm.transition_task(
-                task["task_id"], "queued", from_states={"queued"},
-                routing_decision_json=json.dumps(decision, ensure_ascii=False),
-            )
+        except RoutingError as exc:
+            return _jerr(f"agent 校验失败: {exc.full_detail}")
+        except TaskSubmissionError as exc:
+            return _jerr(exc.detail)
         hint = (
             "会话已建立；后续用 followup_task(task_id) 在同一 Thread 追问；本轮不等待执行完成。"
             if session
             else "已进入队列；本轮不等待完成；系统会自动把任务结果跟进消息推送到对话，无需人工查询。"
         )
         return json.dumps(
-            {"task_id": task["task_id"], "status": task["status"], "engine": eng,
+            {"task_id": task["task_id"], "status": task["status"], "engine": task_engine,
              "workspace": task["workspace"], "session": session, "hint": hint},
             ensure_ascii=False,
         )
