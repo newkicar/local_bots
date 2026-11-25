@@ -25,8 +25,9 @@ import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from app.adapters.base import EngineAdapter, EngineError, RunHooks
 

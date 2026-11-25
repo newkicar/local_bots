@@ -15,7 +15,10 @@ import os
 import shutil
 
 from app.agents.catalog import AgentCatalog
-from app.agents.codex_discovery import CodexProjectDiscoveryProvider, CodexUserDiscoveryProvider
+from app.agents.codex_discovery import (
+    CodexProjectDiscoveryProvider,
+    CodexUserDiscoveryProvider,
+)
 from app.agents.discovery import (
     DISCOVERY_OK,
     DISCOVERY_UNSUPPORTED,

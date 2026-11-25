@@ -17,7 +17,6 @@ from app.followup import handle_task_event
 from app.main import create_app
 from app.secretary import Secretary
 from app.task_manager import TaskManager
-
 from tests.fakes import FakeEngine
 from tests.test_conversations import ScriptedModel, _headers, _settings
 

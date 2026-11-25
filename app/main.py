@@ -9,33 +9,34 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 from pydantic import BaseModel
 
-from app.settings import Settings, get_settings
 from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
 from app.agents.catalog import AgentCatalog, InvalidAgentTransition
 from app.agents.project_trust import ProjectTrustService
 from app.agents.router import AgentRouter, RoutingError, freeze_snapshot
-from app.agents.sync import AgentSyncOrchestrator, VALID_SYNC_SCOPES
+from app.agents.sync import VALID_SYNC_SCOPES, AgentSyncOrchestrator
 from app.approval import ApprovalGate
 from app.auto_approve import MODES, AutoApprover
-from app.dispatcher import Dispatcher
-from app.permissions import Blacklist, coarse_task_policy
-from app.reconcile import reconcile_on_startup
 from app.conversations import ConversationStore
+from app.dispatcher import Dispatcher
 from app.followup import handle_task_event
 from app.memory import MemoryStore
+from app.permissions import Blacklist, coarse_task_policy
+from app.reconcile import reconcile_on_startup
 from app.secretary import Secretary
-from app.task_manager import TASK_TERMINAL_STATES, InvalidTransition, TaskManager
+from app.settings import Settings, get_settings
+from app.task_manager import InvalidTransition, TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -478,7 +479,7 @@ def create_app(
                     try:
                         event = await asyncio.wait_for(q.get(), timeout=15.0)
                         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         yield ": keep-alive\n\n"
             finally:
                 hub.unsubscribe(q)

@@ -18,7 +18,7 @@ import os
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from app.agents.catalog import PROJECT_TRUST_STATES, AgentCatalog
+from app.agents.catalog import AgentCatalog
 
 
 class ProjectTrustError(ValueError):

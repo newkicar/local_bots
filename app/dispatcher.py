@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from app.adapters.base import EngineAdapter, EngineError, RunHooks, RunSuspended
 from app.task_manager import (
@@ -79,7 +80,7 @@ class Dispatcher:
                 await self._pump()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 —— pump 崩溃不得杀死调度
+            except Exception:
                 logger.exception("dispatcher pump error")
             await asyncio.sleep(0.2)
 

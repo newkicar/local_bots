@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 
-from app.task_manager import TASK_TERMINAL_STATES, TaskManager, InvalidTransition
+from app.task_manager import InvalidTransition, TaskManager
 
 BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "tmp_workspace")
 

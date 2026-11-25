@@ -16,7 +16,9 @@ from app.adapters.codex import CodexAdapter
 from app.main import create_app
 from tests.fakes import FakeEngine
 from tests.test_api_skeleton import (
-    TERMINAL, _headers, _settings, _wait_terminal,
+    _headers,
+    _settings,
+    _wait_terminal,
 )
 
 

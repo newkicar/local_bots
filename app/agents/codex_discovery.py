@@ -19,8 +19,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from app.agents.discovery import DISCOVERY_OK, DISCOVERY_UNSUPPORTED, DiscoveryResult
 from app.agents.catalog import AgentCatalog  # type: ignore
+from app.agents.discovery import DISCOVERY_OK, DISCOVERY_UNSUPPORTED, DiscoveryResult
 
 # 必填键（存在且非空才算合法 agent 定义）；developer_instructions 是行为性内容，
 # 只记录存在性 + 全文 hash，不把原文写进 catalog。
@@ -152,7 +152,7 @@ class CodexProjectDiscoveryProvider:
 
     engine = "codex"
 
-    def __init__(self, catalog: "AgentCatalog") -> None:
+    def __init__(self, catalog: AgentCatalog) -> None:
         self._catalog = catalog
 
     async def discover(self, scope: str) -> DiscoveryResult:
@@ -205,7 +205,7 @@ class CodexProjectDiscoveryProvider:
         )
 
 
-def build_codex_discovery(catalog: "AgentCatalog"):
+def build_codex_discovery(catalog: AgentCatalog):
     """Codex provider 集合（票 04 user + 票 06 project）。
 
     完整 provider 集合（jarvis + codex）由票 07 sync orchestrator 组装。

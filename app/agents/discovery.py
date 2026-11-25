@@ -41,7 +41,7 @@ class DiscoveryProvider(Protocol):
 
     engine: str
 
-    async def discover(self, scope: str) -> "DiscoveryResult": ...
+    async def discover(self, scope: str) -> DiscoveryResult: ...
 
 
 @dataclass(frozen=True)

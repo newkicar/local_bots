@@ -10,10 +10,11 @@
 from __future__ import annotations
 
 import json
-import pytest
 import os
 import re
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TUNNEL_CONFIG = REPO_ROOT / "scripts" / "cloudflare_tunnel.json"

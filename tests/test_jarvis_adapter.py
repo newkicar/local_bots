@@ -20,7 +20,7 @@ from langgraph.types import Command
 from app.adapters.base import RunHooks, RunSuspended
 from app.adapters.jarvis import JarvisAdapter
 from app.main import create_app
-from tests.test_api_skeleton import BASE, _headers, _settings, _submit, _wait_terminal
+from tests.test_api_skeleton import _headers, _settings, _submit, _wait_terminal
 
 ADAPTER_SRC = Path(__file__).resolve().parent.parent / "app" / "adapters" / "jarvis.py"
 

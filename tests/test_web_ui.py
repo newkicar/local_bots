@@ -14,9 +14,8 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app

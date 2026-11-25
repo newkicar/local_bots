@@ -15,17 +15,24 @@ import json
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import tool
 
 from app.agents.router import AgentRouter, RoutingError, freeze_snapshot
 from app.dispatcher import Dispatcher
-from app.settings import Settings
 from app.memory import MemoryStore
+from app.settings import Settings
 from app.task_manager import InvalidTransition, TaskManager
 
 #: 发现类操作默认上限（构造函数 caps 可覆盖，测试用极小值）；超时/截断都返回 JSON，绝不失控。
@@ -100,7 +107,7 @@ class Secretary:
         *,
         model: BaseChatModel | None = None,
         caps: dict[str, Any] | None = None,
-        memory: "MemoryStore | None" = None,
+        memory: MemoryStore | None = None,
         router: AgentRouter | None = None,
     ) -> None:
         self._tm = tm
@@ -203,7 +210,7 @@ class Secretary:
 
     # ---------- 对话摘要（票 13：首轮回复后后台生成，直接调模型不走 agent） ----------
 
-    async def summarize(self, messages: list[dict[str, str]]) -> "str | None":
+    async def summarize(self, messages: list[dict[str, str]]) -> str | None:
         """把对话尾部消息总结为 ≤50 字中文摘要；失败返回 None（静默，绝不抛）。"""
         try:
             model = self._model if self._model is not None else self._default_model()

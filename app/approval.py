@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from app.task_manager import InvalidTransition, TaskManager, _now
 
@@ -37,13 +38,13 @@ class ApprovalGate:
     def __init__(
         self,
         tm: TaskManager,
-        dispatcher: "Dispatcher",
-        blacklist: "Blacklist",
+        dispatcher: Dispatcher,
+        blacklist: Blacklist,
         *,
         timeout_min: float = 30.0,
         sweep_interval: float = 15.0,
         clock: Callable[[], str] | None = None,
-        auto_approver: "AutoApprover | None" = None,
+        auto_approver: AutoApprover | None = None,
     ) -> None:
         self._tm = tm
         self._dispatcher = dispatcher
@@ -73,7 +74,7 @@ class ApprovalGate:
             await asyncio.sleep(max(0.05, self.sweep_interval))
             try:
                 await self.sweep_once()
-            except Exception:  # noqa: BLE001 —— 清扫崩溃不得杀死门禁
+            except Exception:
                 logger.exception("approval sweep error")
 
     # ---------- 决策 API（main.py 路由调用） ----------

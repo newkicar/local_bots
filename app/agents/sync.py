@@ -16,8 +16,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from app.agents.catalog import AgentCatalog
 from app.agents.codex_discovery import (
@@ -90,7 +91,7 @@ class AgentSyncOrchestrator:
             if providers is not None
             else full_provider_set(catalog, codex_home=codex_home)
         )
-        self._clock = clock or (lambda: datetime.now(timezone.utc).isoformat())
+        self._clock = clock or (lambda: datetime.now(UTC).isoformat())
 
     async def run_sync(self, scope: str) -> dict[str, Any]:
         """对 scope（user/project）执行一趟 sync 并写一条 sync_runs 记录。"""

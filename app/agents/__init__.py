@@ -4,8 +4,8 @@
 纪律：Provider Snapshot 与 Local Override 分离；缺失只降状态、永不删行；仅 available 可路由。
 """
 from app.agents.catalog import (
-    AGENT_STATUSES,
     AGENT_STATUS_TRANSITIONS,
+    AGENT_STATUSES,
     INVOCATION_MODES,
     PROJECT_TRUST_STATES,
     AgentCatalog,
@@ -16,15 +16,15 @@ from app.agents.codex_discovery import (
     CodexUserDiscoveryProvider,
     build_codex_discovery,
 )
-from app.agents.project_trust import (
-    ProjectTrustError,
-    ProjectTrustService,
-)
 from app.agents.discovery import (
     AgentDiscoveryService,
     DiscoveryResult,
     JarvisDiscoveryProvider,
     build_default_discovery,
+)
+from app.agents.project_trust import (
+    ProjectTrustError,
+    ProjectTrustService,
 )
 
 __all__ = [
@@ -33,15 +33,15 @@ __all__ = [
     "INVOCATION_MODES",
     "PROJECT_TRUST_STATES",
     "AgentCatalog",
-    "InvalidAgentTransition",
     "AgentDiscoveryService",
-    "DiscoveryResult",
-    "JarvisDiscoveryProvider",
-    "build_default_discovery",
-    "CodexUserDiscoveryProvider",
     "CodexProjectDiscoveryProvider",
-    "build_codex_discovery",
+    "CodexUserDiscoveryProvider",
+    "DiscoveryResult",
+    "InvalidAgentTransition",
+    "JarvisDiscoveryProvider",
     "ProjectTrustError",
     "ProjectTrustService",
+    "build_codex_discovery",
+    "build_default_discovery",
 ]
 

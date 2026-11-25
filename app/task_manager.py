@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 import aiosqlite
 
@@ -111,7 +112,7 @@ NotifyFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class InvalidTransition(Exception):
