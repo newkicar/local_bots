@@ -34,3 +34,5 @@ uvicorn.err.log
 # 本机暂存快照与 Jarvis 本机配置（内容已入库/无密钥，勿再跟踪）
 .stage/
 jarvis.json
+
+/.cache/engineering-kit/

@@ -59,3 +59,7 @@ Five canonical role strings, label string equals role name: `needs-triage`, `nee
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root, created lazily by `/domain-modeling`. See `docs/agents/domain.md`.
+
+## Python 代码规范
+
+- 改动 Python 代码后，运行 `python .engineering-kit/python-style` 检查。提交前会运行同一个检查，规则沿用项目中的 Ruff 配置。重复错误记入 `docs/RULES.md`，决策和例外记入 `docs/DECISION_LOG.tsv`。
