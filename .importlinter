@@ -1,0 +1,20 @@
+; Import Linter architecture gate (run via `lint-imports`; see docs/RULES.md py-arch-no-engine-internals).
+; Discipline (AGENTS.md mandatory rules): the Jarvis engine may only be
+; reached through the jarvis public facade (create_jarvis lazy-exported by
+; the jarvis package). The engine's internal packages (src / skills) must
+; never be imported directly by app; indirect reach through the facade is
+; allowed (allow_indirect_imports = True).
+[importlinter]
+root_packages =
+    app
+include_external_packages = True
+
+[importlinter:forbidden:app-no-engine-internals]
+type = forbidden
+name = app must not directly import engine internals (src/skills); only the jarvis facade is allowed
+source_modules =
+    app
+forbidden_modules =
+    src
+    skills
+allow_indirect_imports = True

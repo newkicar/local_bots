@@ -5,6 +5,7 @@
 | `py-ruff-project-config` | 项目本地检查器运行固定版本 Ruff，并加载项目 Ruff 配置。 | `python .engineering-kit/python-style`。 |
 | `py-import-order` | 检查器强制启用 Ruff `I`，约束导入分组与排序。 | 在 Python 文件中打乱 import 顺序，运行检查器应失败。 |
 | `py-function-complexity` | 检查器强制启用 Ruff `C90`，函数圈复杂度上限为 10。 | 构造复杂度超过 10 的函数，运行检查器应报告 `C901`。 |
+| `py-arch-no-engine-internals` | import-linter 禁止 `app` 包（含子包）直接 import Jarvis 内部包 `src`/`skills`；经 `jarvis` 门面（`create_jarvis`）的间接到达放行（契约 `allow_indirect_imports = True`）。 | CI 架构门禁步（硬门禁，`lint-imports`）；本地 `.cache\engineering-kit\import-linter-py310\Scripts\lint-imports.exe`。 |
 
 项目 Ruff 配置仍控制其他规则；`select` 和 `ignore` 不会关闭上述 kit 门槛。确需例外时，在具体导入或函数上使用 `# noqa: I001` 或 `# noqa: C901`，说明原因并在 [决策日志](DECISION_LOG.tsv) 记录。
 
