@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +24,7 @@ from app.adapters.base import EngineAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.jarvis import JarvisAdapter
 from app.agents.catalog import AgentCatalog, InvalidAgentTransition
+from app.agents.discovery import DiscoveryProvider
 from app.agents.project_trust import ProjectTrustService
 from app.agents.router import AgentRouter, RoutingError
 from app.agents.sync import VALID_SYNC_SCOPES, AgentSyncOrchestrator
@@ -41,6 +43,9 @@ from app.task_manager import InvalidTransition, TaskManager
 
 logger = logging.getLogger(__name__)
 
+# 启动步限时（防僵尸）：reconcile 超期→崩溃（DB 状态可重入）；agent sync 超期→跳过
+RECONCILE_TIMEOUT_S: float = 120.0
+AGENT_SYNC_TIMEOUT_S: float = 60.0
 
 class SSEHub:
     """把 TaskManager 通知事件广播给所有 SSE 订阅者（只推状态迁移，不逐字流式）。"""
@@ -111,6 +116,7 @@ def create_app(
     engines: dict[str, EngineAdapter] | None = None,
     secretary: Secretary | None = None,
     secretary_factory: Callable[[TaskManager, Dispatcher, Settings], Secretary] | None = None,
+    agent_sync_providers: list[DiscoveryProvider] | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     settings.ld_data_dir.mkdir(parents=True, exist_ok=True)
@@ -165,19 +171,49 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # 分步限时护栏（防僵尸）：uvicorn 先绑端口后跑 lifespan，任一环节挂起则端口
+        # LISTENING 但所有请求永久挂起；自启 netstat-only 守卫见 LISTENING 跳过重启
+        # → 僵尸状态持续到人工干预。故：挂起步骤必须限时。
+        t0 = time.perf_counter()
         await tm.open()
         await catalog.open()
         await conv_store.open()
-        # 重启核对（票 04）：以持久化状态为输入，恢复或转等待核实，绝不盲目重试
-        await reconcile_on_startup(tm, resolved_engines, dispatcher)
-        # 票 07：启动 agent sync（默认开；失败不阻断启动，仅记日志）
+        logger.info("lifespan db-open 耗时 %.3fs", time.perf_counter() - t0)
+        # 重启核对（票 04）：以持久化状态为输入，恢复或转等待核实，绝不盲目重试。
+        # 限时超期 → 记 CRITICAL 直接崩（崩溃→launcher 重启，DB 状态可重入）
+        t1 = time.perf_counter()
+        try:
+            await asyncio.wait_for(
+                reconcile_on_startup(tm, resolved_engines, dispatcher),
+                timeout=RECONCILE_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.critical(
+                "lifespan reconcile_on_startup 超限时 %.0fs，中止启动（崩溃→launcher 重启）",
+                RECONCILE_TIMEOUT_S,
+            )
+            raise
+        logger.info("lifespan reconcile 耗时 %.3fs", time.perf_counter() - t1)
+        # 票 07：启动 agent sync（默认开；失败/超时不阻断启动，仅记日志）
         if settings.ld_agent_sync_on_startup:
-            try:
-                orch = AgentSyncOrchestrator(catalog)
+            t2 = time.perf_counter()
+            orch = AgentSyncOrchestrator(catalog, providers=agent_sync_providers)
+
+            async def _sync_all() -> None:
                 await orch.run_sync("user")
                 await orch.run_sync("project")
+
+            try:
+                await asyncio.wait_for(_sync_all(), timeout=AGENT_SYNC_TIMEOUT_S)
+            except TimeoutError:
+                logger.error(
+                    "lifespan agent sync 超限时 %.0fs，跳过本轮 sync（不阻断启动）",
+                    AGENT_SYNC_TIMEOUT_S,
+                )
             except Exception:
                 logger.exception("agent 启动 sync 失败（不阻断启动）")
+            else:
+                logger.info("lifespan agent-sync 耗时 %.3fs", time.perf_counter() - t2)
         dispatcher.start()
         gate.start()
         try:

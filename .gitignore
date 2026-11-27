@@ -27,6 +27,7 @@ cf_autostart.log
 scripts/_*
 uvicorn.log
 uvicorn.err.log
+uvicorn_boot*.log
 
 # taste-skill workdir (inspector output, not in repo)
 .taste-skill/
